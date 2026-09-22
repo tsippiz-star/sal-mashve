@@ -1,0 +1,36 @@
+name: Daily Price Scrape
+
+# רץ אוטומטית כל בוקר ב-06:00 שעון ישראל (03:00 UTC)
+# ואפשר להפעיל ידנית מכפתור Actions ב-GitHub
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:      # אפשר להפעיל ידנית
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run scraper (Shufersal only – GitHub runners are US-based)
+        run: |
+          python src/scraper.py --chains shufersal --limit 5
+
+      - name: Commit updated DB
+        run: |
+          git config --global user.name  'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add prices.db
+          git diff --cached --quiet || git commit -m "🤖 עדכון מחירים אוטומטי"
+          git push
