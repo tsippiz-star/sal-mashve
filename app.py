@@ -17,8 +17,14 @@ from comparator import compare, CHAINS_HE
 from matcher import find_candidates
 
 # ─── הגדרות בסיסיות ────────────────────────────────────
-DB_PATH = Path(__file__).parent.parent / "prices.db"
-HISTORY_PATH = Path(__file__).parent.parent / "user_history.json"
+ROOT = Path(__file__).resolve().parent
+# מאתר את המסד גם כשהקבצים בשורש הריפו וגם בתוך תיקיית src
+DB_PATH = next((p for p in (ROOT / "prices.db", ROOT.parent / "prices.db") if p.exists()), ROOT / "prices.db")
+import comparator as _comparator
+import matcher as _matcher
+_comparator.DB_PATH = DB_PATH
+_matcher.DB_PATH = DB_PATH
+HISTORY_PATH = Path(__file__).parent / "user_history.json"
 
 st.set_page_config(
     page_title="🛒 סל משווה – ישראל",
@@ -200,7 +206,7 @@ with col_status:
 # ─── בדיקה שיש נתונים ─────────────────────────
 if not info:
     st.error("⚠️ אין נתונים ב-DB.")
-    st.code("python src/scraper.py --chains shufersal --limit 5", language="bash")
+    st.code("python scraper.py --chains shufersal --limit 5", language="bash")
     st.stop()
 
 # ─── תצוגת מקורות ─────────────────────────────
