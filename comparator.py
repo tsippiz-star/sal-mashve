@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 from matcher import match_item, find_candidates
 
-DB_PATH = Path(__file__).parent.parent / "prices.db"
+DB_PATH = Path(__file__).parent / "prices.db"
 
 CHAINS_HE = {
     "shufersal": "שופרסל",
@@ -16,6 +16,9 @@ CHAINS_HE = {
     "victory":   "ויקטורי",
     "osher-ad":  "אושר עד",
     "tiv-taam":  "טיב טעם",
+    "keshet":      "קשת טעמים",
+    "freshmarket": "פרשמרקט",
+    "paz":         "פז / Yellow",
 }
 
 

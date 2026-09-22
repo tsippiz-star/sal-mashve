@@ -20,8 +20,8 @@ import xml.etree.ElementTree as ET
 import requests
 from bs4 import BeautifulSoup
 
-DATA_DIR = Path(__file__).parent.parent / "data"
-DB_PATH  = Path(__file__).parent.parent / "prices.db"
+DATA_DIR = Path(__file__).parent / "data"
+DB_PATH  = Path(__file__).parent / "prices.db"
 DATA_DIR.mkdir(exist_ok=True)
 
 # ─── הגדרות רשתות ────────────────────────────────────────
@@ -36,6 +36,9 @@ CHAINS = {
     "victory":    {"he_name": "ויקטורי",   "type": "cerberus", "username": "Victory"},
     "osher-ad":   {"he_name": "אושר עד",   "type": "cerberus", "username": "osherad"},
     "tiv-taam":   {"he_name": "טיב טעם",   "type": "cerberus", "username": "TivTaam"},
+    "keshet":      {"he_name": "קשת טעמים", "type": "cerberus", "username": "keshet"},
+    "freshmarket": {"he_name": "פרשמרקט",  "type": "cerberus", "username": "freshmarket"},
+    "paz":         {"he_name": "פז / Yellow", "type": "cerberus", "username": "Paz"},
 }
 
 # ─── DB ─────────────────────────────────────────────────
@@ -71,47 +74,70 @@ def init_db():
 
 
 # ─── שופרסל (שרת פתוח) ─────────────────────────────────
+def _pick_newest(urls, limit):
+    """ממיין לפי חתימת התאריך בשם הקובץ, מסיר כפילויות לפי סניף ומחזיר את החדשים ביותר."""
+    def key(u):
+        name = u.split("/")[-1].split("?")[0]
+        m = re.search(r"(\d{8})[-_]?(\d{6})", name) or re.search(r"(\d{8})", name)
+        ts = "".join(m.groups()) if m else "0000"
+        parts = name.replace(".gz", "").split("-")
+        store = parts[1] if len(parts) > 1 else name
+        return ts, store
+    seen, out = set(), []
+    for u in sorted(urls, key=key, reverse=True):
+        _, store = key(u)
+        if store in seen:
+            continue
+        seen.add(store)
+        out.append(u)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def list_shufersal_files(limit=3):
     r = requests.get(CHAINS["shufersal"]["url"], timeout=30)
     r.raise_for_status()
-    links = re.findall(r'href="([^"]+PriceFull[^"]+\.gz[^"]*)"', r.text)
-    links = [unescape(l) for l in links]
-    return links[:limit]
+    links = [unescape(l) for l in re.findall(r'href="([^"]+PriceFull[^"]+\.gz[^"]*)"', r.text)]
+    return _pick_newest(links, limit)
 
 
 # ─── Cerberus – url.publishedprices.co.il ──────────────
 def cerberus_session(username):
+    """מתחבר לפורטל שקיפות המחירים (username בלבד) ומחזיר session + csrftoken עדכני."""
     s = requests.Session()
     s.headers["User-Agent"] = "Mozilla/5.0"
     resp = s.get("https://url.publishedprices.co.il/login", timeout=30)
     csrf = BeautifulSoup(resp.text, "html.parser").find("meta", {"name": "csrftoken"})
     if not csrf:
         raise RuntimeError("csrftoken not found")
-    token = csrf["content"]
     s.post("https://url.publishedprices.co.il/login/user",
-           data={"username": username, "password": "", "csrftoken": token},
+           data={"username": username, "password": "", "csrftoken": csrf["content"]},
            timeout=30)
-    return s, token
+    page = s.get("https://url.publishedprices.co.il/file", timeout=30)
+    fresh = BeautifulSoup(page.text, "html.parser").find("meta", {"name": "csrftoken"})
+    return s, (fresh["content"] if fresh else csrf["content"])
 
 
-def list_cerberus_files(username, limit=3):
+def list_cerberus_files(username, limit=3, search="PriceFull"):
+    """מחזיר את כתובות ההורדה של הקבצים החדשים ביותר (סניף אחד לכל קובץ)."""
     s, token = cerberus_session(username)
     r = s.post("https://url.publishedprices.co.il/file/json/dir",
-               data={"sEcho": 1, "iColumns": 5, "sSearch": "PriceFull", "csrftoken": token},
+               data={"sEcho": 1, "iColumns": 5, "iDisplayStart": 0,
+                     "iDisplayLength": 200, "sSearch": search, "csrftoken": token},
                timeout=30)
-    data = r.json()
-    rows = data.get("aaData", []) or []
-    files = []
-    for row in rows[:limit]:
-        # row[0] is HTML like: <a href="..."...>FILENAME</a>
-        m = re.search(r'href="([^"]+\.gz)"', row[0] if isinstance(row, list) else row.get("fname", ""))
-        fname = m.group(1) if m else (row[0] if isinstance(row, list) else row.get("fname"))
-        if fname:
-            files.append(urljoin("https://url.publishedprices.co.il/file/d/", fname))
-    return files, s
+    rows = r.json().get("aaData") or []
+    names = []
+    for row in rows:
+        name = row.get("fname") if isinstance(row, dict) else None
+        if not name:
+            m = re.search(r'href="([^"]+\.gz)"', str(row))
+            name = m.group(1) if m else None
+        if name and name.lower().endswith(".gz"):
+            names.append("https://url.publishedprices.co.il/file/d/" + name)
+    return _pick_newest(names, limit), s
 
 
-# ─── הורדה ו-Parsing ───────────────────────────────────
 def download(url, dest, session=None):
     r = (session or requests).get(url, timeout=90)
     r.raise_for_status()
@@ -121,33 +147,37 @@ def download(url, dest, session=None):
 
 
 def parse_pricefull(path):
-    """מפרסר קובץ PriceFull.gz ומחזיר רשימת dicts + store_id."""
+    """מפרסר קובץ PriceFull.gz בזרימה (iterparse) - צריכת זיכרון נמוכה."""
+    store_id = "0"
+    items = []
     try:
         with gzip.open(path, "rb") as f:
-            tree = ET.parse(f)
+            for _, el in ET.iterparse(f, events=("end",)):
+                tag = el.tag.split("}")[-1]
+                if tag == "StoreID" and store_id == "0":
+                    store_id = (el.text or "").strip() or "0"
+                elif tag == "Item":
+                    try:
+                        price = float(el.findtext("ItemPrice") or 0)
+                    except ValueError:
+                        price = 0
+                    barcode = (el.findtext("ItemCode") or "").strip()
+                    if barcode and price > 0:
+                        items.append({
+                            "barcode":    barcode,
+                            "name":       (el.findtext("ItemName") or "").strip(),
+                            "brand":      (el.findtext("ManufactureName") or el.findtext("ManufacturerName") or "").strip(),
+                            "price":      price,
+                            "unit":       (el.findtext("UnitOfMeasure") or el.findtext("UnitQty") or "").strip(),
+                            "qty":        float(el.findtext("Quantity") or 0),
+                            "updated_at": el.findtext("PriceUpdateTime") or "",
+                        })
+                    el.clear()
     except Exception as e:
         print(f"  ! parse error: {e}")
         return None, []
-    root = tree.getroot()
-    store_id = root.findtext("StoreID") or root.findtext(".//StoreID") or "0"
-    items = []
-    for it in root.findall(".//Item"):
-        try:
-            price = float(it.findtext("ItemPrice") or 0)
-        except ValueError:
-            continue
-        barcode = (it.findtext("ItemCode") or "").strip()
-        if not barcode or price <= 0:
-            continue
-        items.append({
-            "barcode":    barcode,
-            "name":       (it.findtext("ItemName") or "").strip(),
-            "brand":      (it.findtext("ManufactureName") or it.findtext("ManufacturerName") or "").strip(),
-            "price":      price,
-            "unit":       (it.findtext("UnitOfMeasure") or it.findtext("UnitQty") or "").strip(),
-            "qty":        float(it.findtext("Quantity") or 0),
-            "updated_at": it.findtext("PriceUpdateTime") or "",
-        })
+    if not items:
+        return None, []
     return store_id, items
 
 
