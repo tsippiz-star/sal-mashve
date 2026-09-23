@@ -19,7 +19,39 @@ from matcher import find_candidates
 # ─── הגדרות בסיסיות ────────────────────────────────────
 ROOT = Path(__file__).resolve().parent
 # מאתר את המסד גם כשהקבצים בשורש הריפו וגם בתוך תיקיית src
-DB_PATH = next((p for p in (ROOT / "prices.db", ROOT.parent / "prices.db") if p.exists()), ROOT / "prices.db")
+# ─── בחירת קובץ המסד: סדר עדיפויות מפורש ───
+# 1) הכי הרבה רשתות   2) הכי הרבה שורות   3) קובץ בשם prices.db   4) הגודל
+# כך שגם אם הישן (שופרסל בלבד) יושב בשם prices.db, הוא לא ייבחר לעולם
+# כל עוד קיים קובץ עם יותר רשתות.
+APP_VERSION = "db-pick v3 · 2026-09-23"
+
+
+def _db_stats(_p):
+    """(רשתות, שורות, גודל) — עובד גם כששם הקובץ מכיל רווחים וסוגריים."""
+    _size = _p.stat().st_size
+    for _target, _is_uri in ((f"file:{_p}?mode=ro", True), (str(_p), False)):
+        try:
+            _con = sqlite3.connect(_target, uri=_is_uri)
+            _chains = _con.execute("SELECT COUNT(DISTINCT chain) FROM prices").fetchone()[0]
+            _rows = _con.execute("SELECT COUNT(*) FROM prices").fetchone()[0]
+            _con.close()
+            return (_chains, _rows, _size)
+        except Exception:
+            continue
+    return (0, 0, _size)
+
+
+def _db_score(_p):
+    _chains, _rows, _size = _db_stats(_p)
+    return (_chains, _rows, 1 if _p.name == "prices.db" else 0, _size)
+
+
+_cands = {*ROOT.glob("prices*.db"), ROOT / "prices.db", ROOT.parent / "prices.db"}
+_existing = sorted((x for x in _cands if x.exists()), key=lambda x: x.name)
+DB_SCAN = [(_x, _db_stats(_x)) for _x in _existing]
+DB_PATH = max(_existing, key=_db_score) if _existing else ROOT / "prices.db"
+DB_INFO = _db_stats(DB_PATH)
+
 import comparator as _comparator
 import matcher as _matcher
 _comparator.DB_PATH = DB_PATH
@@ -223,7 +255,192 @@ with st.expander("📊 מקורות הנתונים"):
 st.markdown("---")
 
 # ─── טאבים ─────────────────────────────
-tab_new, tab_history, tab_help = st.tabs(["🔍 השוואה חדשה", "📊 היסטוריה", "❓ עזרה"])
+# ─── בדיקה גלויה: אילו רשתות נטענו, מאיזה קובץ ובאיזו גרסת קוד ───
+import datetime as _dt
+import pandas as pd
+
+ALL_CHAINS = ["shufersal", "rami-levy", "yohananof", "osher-ad",
+              "tiv-taam", "keshet", "freshmarket", "paz"]
+
+
+def _chain_rows(_path):
+    try:
+        _con = sqlite3.connect(str(_path))
+        _rows = _con.execute(
+            "SELECT chain, COUNT(*) FROM prices GROUP BY chain ORDER BY COUNT(*) DESC"
+        ).fetchall()
+        _con.close()
+        return _rows
+    except Exception:
+        return []
+
+
+_chain_rows_db = _chain_rows(DB_PATH)
+_found_keys = [c for c, _n in _chain_rows_db]
+_found_names = [CHAINS_HE.get(c, c) for c in _found_keys]
+_missing_names = [CHAINS_HE.get(c, c) for c in ALL_CHAINS if c not in _found_keys]
+
+st.caption(
+    f"📁 קובץ נתונים שנטען: `{DB_PATH.name}` · רשתות בקובץ: "
+    f"**{len(_found_keys)} מתוך 8** · גרסת קוד: `{APP_VERSION}`"
+)
+
+if _found_names:
+    st.markdown("**הרשתות שנמצאו במסד:**")
+    st.markdown("  ".join(f"`{n}`" for n in _found_names))
+
+if _missing_names:
+    st.markdown("**⚠️ רשתות שלא נמצאו במסד:** " + "  ".join(f"`{n}`" for n in _missing_names))
+
+if len(_found_keys) < 8:
+    st.warning(
+        f"⚠️ **נטענו רק {len(_found_keys)} מתוך 8 הרשתות.** "
+        + (f"חסרות: {', '.join(_missing_names)}. " if _missing_names else "")
+        + "סימן שהאפליקציה קוראת קובץ נתונים ישן או חלקי — "
+        "פִּתחי את 'למה נבחר הקובץ הזה?' למטה כדי לראות את כל הקבצים שנמצאו בריפו."
+    )
+else:
+    st.success("✅ כל 8 הרשתות נטענו בהצלחה.")
+
+with st.expander("🔎 למה נבחר הקובץ הזה? (כל קבצי הנתונים שנמצאו)", expanded=len(_found_keys) < 8):
+    st.dataframe(
+        pd.DataFrame([
+            {
+                "קובץ": _pth.name,
+                "רשתות": _ch,
+                "שורות": _rw,
+                "גודל (MB)": round(_sz / 1048576, 1),
+                "עודכן": _dt.datetime.fromtimestamp(_pth.stat().st_mtime).strftime("%d/%m %H:%M"),
+                "נבחר": "✅" if _pth == DB_PATH else "",
+            }
+            for _pth, (_ch, _rw, _sz) in DB_SCAN
+        ]),
+        use_container_width=True, hide_index=True,
+    )
+    st.caption(
+        "סדר העדיפויות: 1) הכי הרבה רשתות · 2) הכי הרבה שורות · "
+        "3) קובץ בשם prices.db · 4) הגודל. "
+        "כלומר קובץ עם 8 רשתות תמיד ינצח את הקובץ הישן עם הרשת הבודדת, "
+        "לא משנה איך הם נקראים."
+    )
+
+# ─── השוואה: הקובץ שבסביבה מול הקובץ בגיטהאב ───
+from datetime import datetime as _dtime, timedelta as _tdelta, timezone as _tz
+
+GITHUB_REPO = "tsippiz-star/sal-mashve"
+GITHUB_BRANCH = "main"
+_IL = _tz(_tdelta(hours=3))  # שעון ישראל
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _github_db_info():
+    """{שם קובץ: (תאריך הקומיט האחרון, גודל)} עבור קובצי המסד בגיטהאב."""
+    import json as _json
+    import urllib.parse as _up
+    import urllib.request as _ur
+
+    def _get(_url):
+        _req = _ur.Request(_url, headers={"User-Agent": "sal-mashve-app"})
+        with _ur.urlopen(_req, timeout=8) as _r:
+            return _json.load(_r)
+
+    try:
+        _tree = _get(f"https://api.github.com/repos/{GITHUB_REPO}/git/trees/{GITHUB_BRANCH}?recursive=1")
+    except Exception:
+        return {}
+
+    _out = {}
+    for _e in _tree.get("tree", []):
+        _n = _e.get("path", "")
+        if _e.get("type") == "blob" and _n.startswith("prices") and _n.endswith(".db"):
+            _out[_n] = {"size": _e.get("size", 0), "commit": None}
+
+    for _n in list(_out)[:6]:
+        try:
+            _c = _get(f"https://api.github.com/repos/{GITHUB_REPO}/commits?path={_up.quote(_n)}&per_page=1")
+            if _c:
+                _out[_n]["commit"] = _c[0]["commit"]["committer"]["date"]
+        except Exception:
+            pass
+    return _out
+
+
+_gh_info = _github_db_info()
+_env_files = {_p.name: _p for _p, _ in DB_SCAN}
+_gh_names = set(_gh_info)
+_all_names = sorted(_env_files) if not _gh_info else sorted(set(_env_files) | _gh_names)
+
+_rows_cmp, _need_reboot = [], []
+for _name in _all_names:
+    _ep = _env_files.get(_name)
+    _gp = _gh_info.get(_name) or {}
+    _env_dt = _dtime.fromtimestamp(_ep.stat().st_mtime, _tz.utc) if _ep else None
+    _env_txt = _env_dt.astimezone(_IL).strftime("%d/%m/%Y %H:%M") if _env_dt else "❌ לא קיים"
+    _gh_size = _gp.get("size")
+    _gh_iso = _gp.get("commit")
+    _gh_dt = _dtime.fromisoformat(_gh_iso.replace("Z", "+00:00")) if _gh_iso else None
+    _gh_txt = _gh_dt.astimezone(_IL).strftime("%d/%m/%Y %H:%M") if _gh_dt else "—"
+
+    if _gh_size is None:                                     # קובץ שלא נמצא בגיטהאב
+        _state = "— לא נמצא בגיטהאב"
+    elif _ep is None:                                        # קיים בגיטהאב, חסר בסביבה
+        _state = "🔄 נדרש Reboot — הקובץ עוד לא הגיע לסביבה"
+        _need_reboot.append(f"`{_name}` חסר בסביבה")
+    elif _ep.stat().st_size != _gh_size:                     # גדלים שונים = תוכן שונה
+        _state = "🔄 נדרש Reboot — בסביבה גרסה שונה מזו שבגיטהאב"
+        _need_reboot.append(f"`{_name}` בגודל שונה")
+    elif _gh_dt and _env_dt and _gh_dt > _env_dt + _tdelta(minutes=2):
+        _state = "🔄 נדרש Reboot — בגיטהאב יש גרסה חדשה יותר"
+        _need_reboot.append(f"`{_name}` חדש יותר בגיטהאב")
+    else:
+        _state = "✅ מעודכן"
+
+    _rows_cmp.append({
+        "קובץ": _name,
+        "תאריך בסביבה": _env_txt,
+        "תאריך בגיטהאב": _gh_txt,
+        "גודל בסביבה (MB)": round(_ep.stat().st_size / 1048576, 1) if _ep else "❌",
+        "גודל בגיטהאב (MB)": round(_gh_size / 1048576, 1) if _gh_size is not None else "—",
+        "מצב": _state,
+    })
+
+with st.expander("🕒 השוואה מול גיטהאב — האם צריך Reboot?", expanded=bool(_need_reboot)):
+    if not _gh_info:
+        st.info(
+            "לא הצלחתי לקרוא את גיטהאב כרגע (אין רשת או הגבלת קצב של ה-API). "
+            "אפשר לנסות שוב בעוד דקה, או פשוט ללחוץ Reboot."
+        )
+    else:
+        st.dataframe(pd.DataFrame(_rows_cmp), use_container_width=True, hide_index=True)
+        st.caption(
+            "אם תאריך הקומיט בגיטהאב חדש מהתאריך שבסביבה — או שהגדלים שונים — "
+            "הגרסה שהאפליקציה מריצה אינה המעודכנת, ונדרש Reboot."
+        )
+
+if _gh_info and _need_reboot:
+    st.error(
+        "🔄 **נדרש Reboot:** " + " · ".join(_need_reboot)
+        + " — נכנסים לתפריט **⋯ → Reboot app**. "
+        "בלי זה האפליקציה תמשיך לעבוד עם הגרסה הישנה שבזיכרון שלה."
+    )
+elif _gh_info and _all_names:
+    st.success("✅ הקבצים שבסביבה תואמים את מה שבגיטהאב — אין צורך ב-Reboot.")
+
+# ─── כפתור: לאתר מחדש את קובץ המסד בלי Reboot ───
+_bcol1, _bcol2 = st.columns([1, 2])
+with _bcol1:
+    if st.button("🔄 לאתר מחדש את קובץ הנתונים", help="סורק שוב את כל קובצי prices*.db שבסביבת האפליקציה, מנקה את הזיכרון הפנימי ובוחר את הקובץ עם הכי הרבה רשתות"):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.rerun()
+with _bcol2:
+    st.caption(
+        f"סריקה אחרונה: **{_dt.datetime.now().strftime('%d/%m/%Y %H:%M:%S')}** · "
+        "הלחיצה סורקת מחדש את הקבצים שבסביבת האפליקציה, מנקה זיכרון פנימי וטוענת את הקובץ הטוב ביותר. "
+        "אם קובץ חדש עדיין לא הגיע לסביבה — הוא לא יימצא עד שהאפליקציה תתרענן מול גיטהאב."
+    )
+
+tab_new, tab_data, tab_history, tab_help = st.tabs(["🔍 השוואה חדשה", "🗂️ כל הנתונים", "📊 היסטוריה", "❓ עזרה"])
 
 with tab_new:
     st.markdown("### ✍️ מה יש בסל?")
@@ -401,3 +618,107 @@ st.markdown(
     "</div>",
     unsafe_allow_html=True,
 )
+
+
+# ─── לשונית: כל הנתונים ─────────────────────────
+with tab_data:
+    st.markdown("### 🗂️ כל המחירים במאגר")
+    st.caption("כל הנתונים שנאספו מהרשתות — חיפוש לפי שם מוצר או ברקוד, והורדה לאקסל.")
+
+    CHAIN_KEYS = ["shufersal", "rami-levy", "yohananof", "osher-ad",
+                  "tiv-taam", "keshet", "freshmarket", "paz"]
+    CHAIN_COLS = [CHAINS_HE.get(c, c) for c in CHAIN_KEYS]
+
+    c1, c2, c3 = st.columns([2, 1, 1])
+    q = c1.text_input("חיפוש (שם מוצר או ברקוד)", "", key="data_q")
+    only_shared = c2.checkbox("רק מוצרים ביותר מרשת אחת", value=True, key="data_shared")
+    rows_limit = c3.selectbox("כמה שורות להציג", [100, 200, 500, 1000, 5000], index=1, key="data_limit")
+
+    where, params = [], []
+    if q.strip():
+        where.append("(name LIKE ? OR barcode LIKE ?)")
+        params += [f"%{q.strip()}%", f"%{q.strip()}%"]
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    min_chains = 1 if only_shared is False else 2
+
+    price_cols_sql = ",\n".join(
+        '               MAX(CASE WHEN chain = \'{c}\' THEN price END) AS "{h}"'.format(c=c, h=CHAINS_HE.get(c, c))
+        for c in CHAIN_KEYS
+    )
+    sql = f"""
+        SELECT barcode,
+               MAX(name) AS "מוצר",
+               MAX(brand) AS "מותג",
+{price_cols_sql},
+               COUNT(DISTINCT chain) AS "מספר רשתות"
+        FROM prices
+        {where_sql}
+        GROUP BY barcode
+        HAVING COUNT(DISTINCT chain) >= {int(min_chains)}
+        ORDER BY "מספר רשתות" DESC, "מוצר"
+        LIMIT {int(rows_limit)}
+    """
+    _conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query(sql, _conn, params=params)
+    _conn.close()
+
+    if df.empty:
+        st.info("לא נמצאו מוצרים לחיפוש הזה. נסי מילה אחרת.")
+    else:
+        df["המחיר הזול"] = df[CHAIN_COLS].min(axis=1).round(2)
+        df["הרשת הזולה"] = df[CHAIN_COLS].idxmin(axis=1)
+        st.success(f"מוצגים {len(df):,} מוצרים מתוך המאגר")
+        st.dataframe(df, use_container_width=True, hide_index=True, height=520)
+        st.download_button(
+            "⬇️ הורדת הטבלה לאקסל (CSV)",
+            df.to_csv(index=False).encode("utf-8-sig"),
+            file_name="prices_export.csv",
+            mime="text/csv",
+        )
+
+    # ─── תרשים: איזו רשת היא הזולה ביותר ───
+    st.markdown("---")
+    st.markdown("### 🏆 איזו רשת יוצאת הזולה ביותר?")
+    st.caption("לכל מוצר שבסינון הנוכחי נבדק המחיר בכל 8 הרשתות, וכל פריט נזקף לרשת שהציעה בו את המחיר הנמוך.")
+
+    sql_all = f"""
+        SELECT barcode,
+{price_cols_sql},
+               COUNT(DISTINCT chain) AS n_chains
+        FROM prices
+        {where_sql}
+        GROUP BY barcode
+        HAVING COUNT(DISTINCT chain) >= {int(min_chains)}
+        LIMIT 60000
+    """
+    _c2 = sqlite3.connect(DB_PATH)
+    df_all = pd.read_sql_query(sql_all, _c2, params=params)
+    _c2.close()
+
+    if df_all.empty:
+        st.info("אין נתונים לתרשים בסינון הזה.")
+    else:
+        cheapest = df_all[CHAIN_COLS].idxmin(axis=1).dropna()
+        counts = cheapest.value_counts()
+        chart_df = counts.to_frame("מוצרים שבהם הרשת זולה")
+        chart_df["אחוז מהמוצרים"] = (counts / counts.sum() * 100).round(1)
+        chart_df["מקום"] = range(1, len(chart_df) + 1)
+
+        left, right = st.columns([3, 2])
+        with left:
+            st.bar_chart(chart_df["מוצרים שבהם הרשת זולה"])
+        with right:
+            st.dataframe(
+                chart_df[["מקום", "מוצרים שבהם הרשת זולה", "אחוז מהמוצרים"]],
+                use_container_width=True, hide_index=False, height=340,
+            )
+
+        top_chain = counts.index[0]
+        top_n = int(counts.iloc[0])
+        st.success(
+            f"👑 **{top_chain}** היא הרשת הזולה ביותר ב‑{top_n:,} מוצרים "
+            f"({counts.iloc[0] / counts.sum() * 100:.1f}% מהמוצרים שנבדקו), "
+            f"מתוך {int(counts.sum()):,} מוצרים עם מחיר ביותר מרשת אחת."
+        )
+        st.caption("החישוב מבוסס על הסינון שבחרת למעלה (חיפוש / מספר רשתות). "
+                   "שימי לב: זו ספירת 'מי הזול בפריט הבודד' — לא בהכרח הסל הכולל הזול ביותר.")
