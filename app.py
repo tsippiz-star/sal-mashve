@@ -459,6 +459,97 @@ with tab_new:
             if st.button(name, key=f"ex_{name}", use_container_width=True):
                 st.session_state.shopping_list = content
 
+    # ─── הרשימה שלי: העלאת קובץ + הזנה ידנית ───
+    st.markdown("---")
+    st.markdown("### 📋 הרשימה שלי")
+    st.caption("כל משתמש רואה רק את הרשימה שלו — היא נשמרת בדפדפן של מי שהזין אותה ואינה משותפת עם אחרים.")
+
+    up_col, tpl_col, save_col = st.columns([2, 1, 1])
+    with up_col:
+        uploaded = st.file_uploader(
+            "העלאת רשימה מהמחשב (CSV / TXT / Excel)",
+            type=["csv", "txt", "xlsx", "xls"],
+            key="list_upload",
+            help="קובץ עם עמודה של שמות מוצרים, ואם יש גם עמודת כמות — היא תיקרא אוטומטית",
+        )
+    with tpl_col:
+        st.download_button(
+            "⬇️ תבנית רשימה",
+            "מוצר,כמות\nחלב 3%,2\nלחם אחיד,1\nביצים L,12\nקוטג',1\n".encode("utf-8-sig"),
+            file_name="תבנית_רשימת_קניות.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    with save_col:
+        _cur = [x.strip() for x in str(st.session_state.get("shopping_list", "")).splitlines() if x.strip()]
+        st.download_button(
+            "⬇️ שמירת הרשימה שלי",
+            ("מוצר,כמות\n" + "\n".join(_cur) + "\n").encode("utf-8-sig"),
+            file_name="הרשימה_שלי.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    if uploaded is not None:
+        try:
+            _fname = uploaded.name.lower()
+            if _fname.endswith((".xlsx", ".xls")):
+                _df_up = pd.read_excel(uploaded)
+            else:
+                _raw = uploaded.getvalue().decode("utf-8-sig", errors="replace")
+                _lines_raw = [l for l in _raw.splitlines() if l.strip()]
+                if _lines_raw and "," in _lines_raw[0]:
+                    import io as _io
+                    _df_up = pd.read_csv(_io.StringIO(_raw))
+                else:
+                    _df_up = pd.DataFrame({"מוצר": [l.strip() for l in _lines_raw]})
+
+            _cols = {str(c).strip().lower(): c for c in _df_up.columns}
+            _name_col = next((_cols[k] for k in ("מוצר", "פריט", "שם", "product", "name", "item") if k in _cols), _df_up.columns[0])
+            _qty_col = next((_cols[k] for k in ("כמות", "מס'", "quantity", "qty", "count") if k in _cols), None)
+
+            _parsed = []
+            for _, _r in _df_up.iterrows():
+                _nm = str(_r.get(_name_col, "") or "").strip()
+                if not _nm or _nm.lower() in ("nan", "none"):
+                    continue
+                _pref = ""
+                if _qty_col is not None:
+                    try:
+                        _q = float(_r.get(_qty_col))
+                        _pref = f"{int(_q) if _q == int(_q) else _q} "
+                    except Exception:
+                        _pref = ""
+                _parsed.append(f"{_pref}{_nm}".strip())
+
+            if _parsed:
+                _txt_new = "\n".join(_parsed)
+                st.session_state["shopping_list"] = _txt_new
+                st.session_state["input_area"] = _txt_new
+                st.success(f"✅ נטענו {len(_parsed)} פריטים מהקובץ `{uploaded.name}`")
+                st.rerun()
+            else:
+                st.warning("לא נמצאו פריטים בקובץ — ודאי שיש בו עמודה עם שמות מוצרים.")
+        except Exception as _e:
+            st.error(f"לא הצלחתי לקרוא את הקובץ: {_e}")
+
+    st.markdown("**או הזיני ידנית — שורה לכל מוצר (אפשר להוסיף שורות בטבלה):**")
+    _rows_init = pd.DataFrame([{"מוצר": "", "כמות": 1}] * 5)
+    tbl_out = None
+    try:
+        tbl_out = st.data_editor(
+            _rows_init, num_rows="dynamic", use_container_width=True, hide_index=True,
+            key="items_table",
+            column_config={
+                "מוצר": st.column_config.TextColumn("מוצר", width="large"),
+                "כמות": st.column_config.NumberColumn("כמות", min_value=0.0, step=1.0),
+            },
+        )
+    except TypeError:
+        tbl_out = st.data_editor(_rows_init, num_rows="dynamic", use_container_width=True,
+                                 hide_index=True, key="items_table")
+    st.caption("הפריטים שהוזנו בטבלה מתווספים אוטומטית להשוואה — אין צורך להעתיק אותם.")
+
     default = st.session_state.get("shopping_list",
                                      "חלב 3%\nקוטג'\nביצים L\nבמבה\nלחם אחיד\nיוגורט\nגבינה צהובה")
 
@@ -472,13 +563,76 @@ with tab_new:
     compare_btn = st.button("🔍 השווי את הסל", use_container_width=True, type="primary")
 
     if compare_btn:
-        items = [x.strip("•-*.0123456789) ").strip()
-                 for x in txt.splitlines() if x.strip()]
+        # ─── איסוף הפריטים יחד עם הכמויות (מהטקסט וגם מהטבלה) ───
+        import re as _re
+
+        def _qty_and_name(_line):
+            """מחלץ כמות ושם מוצר משורה — '2 חלב 3%' / 'חלב 3% x2' / 'חלב 3%'."""
+            _s = str(_line).strip()
+            _m1 = _re.match(r"^\s*(\d+(?:[.,]\d+)?)\s*[xX*×]?\s+(.+)$", _s)
+            if _m1:
+                return float(_m1.group(1).replace(",", ".")), _m1.group(2).strip()
+            _m2 = _re.match(r"^(.+?)\s*[xX*×]\s*(\d+(?:[.,]\d+)?)$", _s)
+            if _m2:
+                return float(_m2.group(2).replace(",", ".")), _m2.group(1).strip()
+            return 1.0, _s
+
+        _pairs = []
+        for _line in txt.splitlines():
+            if _line.strip():
+                _pairs.append(_qty_and_name(_line))
+
+        try:
+            _tbl = tbl_out if isinstance(tbl_out, pd.DataFrame) else pd.DataFrame(tbl_out)
+            for _, _r in _tbl.iterrows():
+                _nm2 = str(_r.get("מוצר", "") or "").strip()
+                if not _nm2 or _nm2.lower() in ("nan", "none"):
+                    continue
+                try:
+                    _q2 = float(_r.get("כמות", 1) or 1)
+                except Exception:
+                    _q2 = 1.0
+                _pairs.append((_q2 if _q2 > 0 else 1.0, _nm2))
+        except Exception:
+            pass
+
+        # איחוד לפי שם מוצר — כמויות של אותו מוצר מחוברות זו לזו
+        qty_of, items = {}, []
+        for _q, _n in _pairs:
+            _key = _n.replace(" ", "").lower()
+            if not _key:
+                continue
+            if _key in qty_of:
+                qty_of[_key] = qty_of[_key] + _q
+            else:
+                qty_of[_key] = _q
+                items.append(_n)
+
         if not items:
             st.warning("הזיני לפחות פריט אחד")
         else:
             with st.spinner(f"🔎 מחפש {len(items)} פריטים ברשתות..."):
                 result = compare(items)
+
+            # ─── הסיכום משוקלל לפי הכמות (2 חלב = פעמיים המחיר) ───
+            def _qty_for(_name):
+                _k = str(_name).replace(" ", "").lower()
+                if _k in qty_of:
+                    return qty_of[_k]
+                return qty_of.get(str(_name).strip().replace(" ", "").lower(), 1.0)
+
+            _weighted = {}
+            for _c in result["chains"]:
+                _tot, _hits, _miss = 0.0, 0, 0
+                for _m in result["matched"]:
+                    _pr = _m["prices"].get(_c)
+                    if _pr is None:
+                        _miss += 1
+                    else:
+                        _hits += 1
+                        _tot += _pr * _qty_for(_m["query"])
+                _weighted[_c] = {"total": round(_tot, 2), "hits": _hits, "missing": _miss}
+            result["totals"] = _weighted
 
             save_to_history(items, result)
 
@@ -508,6 +662,7 @@ with tab_new:
                 if not valid:
                     continue
                 min_price = min(valid.values())
+                _q_item = _qty_for(m["query"])
 
                 tags_html = ""
                 for c in chains:
@@ -526,18 +681,23 @@ with tab_new:
                 st.markdown(f"""
                 <div class="result-card">
                     <div style="font-weight:700;font-size:1.05rem;color:#1f2937;">
-                        {m['query']}
+                        {m['query']}{(' × ' + format(_q_item, 'g')) if _q_item > 1 else ''}
                     </div>
                     <div style="color:#6b7280;font-size:0.85rem;margin:4px 0 8px;">
                         {prod['name']}
                     </div>
                     <div>{tags_html}</div>
+                    {('<div style="margin-top:6px;font-size:0.85rem;color:#374151;">סה&quot;כ לפריט זה ברשת הזולה: ' + format(min_price * _q_item, '.2f') + ' ₪</div>') if _q_item > 1 else ''}
                 </div>
                 """, unsafe_allow_html=True)
 
             # ─── סיכום סלים בכרטיסים ──────────
             st.markdown("---")
             st.markdown("### 💰 סיכום סלים")
+            _qty_items = [i for i in items if _qty_for(i) > 1]
+            st.caption("הסיכום משוקלל לפי הכמויות שהזנת — "
+                       + (", ".join(f"{i} × {format(_qty_for(i), 'g')}" for i in _qty_items)
+                          if _qty_items else "כל פריט נספר ביחידה אחת."))
             tot = result["totals"]
             valid_totals = {c: tot[c] for c in chains if tot[c]["hits"] > 0}
 
@@ -568,6 +728,62 @@ with tab_new:
                     )
 
 
+                # ─── ⚖️ הוגנות ההשוואה: מי לא כללה איזה פריט ───
+                st.markdown("---")
+                st.markdown("### ⚖️ הוגנות ההשוואה — מי לא כללה איזה פריט")
+                st.caption("רשת שלא מוכרת פריט מהסל שלך מקבלת יתרון לא הוגן, כי הפריט פשוט לא נספר לה.")
+
+                _eligible = [c for c in chains if result["totals"][c]["hits"] > 0]
+                _missing_by_chain = {}
+                for _c in _eligible:
+                    _its = []
+                    for _m in result["matched"]:
+                        if _m["prices"].get(_c) is None:
+                            _q = _qty_for(_m["query"])
+                            _its.append(str(_m["query"]) + (f" × {format(_q, 'g')}" if _q > 1 else ""))
+                    if _its:
+                        _missing_by_chain[_c] = _its
+
+                if _missing_by_chain:
+                    for _c, _its in sorted(_missing_by_chain.items(), key=lambda x: (-len(x[1]), x[0])):
+                        st.warning(
+                            f"**{CHAINS_HE.get(_c, _c)}** לא כללה {len(_its)} פריטים מהסל: " + " · ".join(_its)
+                        )
+                    if winner[0] in _missing_by_chain:
+                        st.error(
+                            f"⚠️ שימי לב: הרשת הזולה הכוללת — **{CHAINS_HE.get(winner[0], winner[0])}** — "
+                            f"לא כללה {len(_missing_by_chain[winner[0]])} פריטים מהסל. "
+                            "הסיכום שלה אינו הוגן מול רשתות שכללו את הסל במלואו."
+                        )
+                else:
+                    st.success("✅ כל הרשתות כללו את כל פריטי הסל — ההשוואה הוגנת לחלוטין.")
+
+                # השוואה הוגנת: רק הפריטים שקיימים בכל הרשתות
+                _common = [m for m in result["matched"]
+                           if _eligible and all(m["prices"].get(c) is not None for c in _eligible)]
+                if _eligible and _common and len(_common) < len(result["matched"]):
+                    st.markdown(
+                        f"**השוואה הוגנת — רק {len(_common)} מתוך {len(result['matched'])} הפריטים "
+                        f"שקיימים בכל {len(_eligible)} הרשתות:**"
+                    )
+                    _fair = {_c: round(sum(m["prices"][_c] * _qty_for(m["query"]) for m in _common), 2)
+                             for _c in _eligible}
+                    _fair_sorted = sorted(_fair.items(), key=lambda x: x[1])
+                    st.dataframe(
+                        pd.DataFrame([
+                            {"רשת": CHAINS_HE.get(_c, _c),
+                             'סה"כ הוגן (₪)': _t,
+                             "פער מהזולה (₪)": round(_t - _fair_sorted[0][1], 2)}
+                            for _c, _t in _fair_sorted
+                        ]),
+                        use_container_width=True, hide_index=True,
+                    )
+                    st.success(
+                        f"🏆 בהשוואה הוגנת הזולה היא **{CHAINS_HE.get(_fair_sorted[0][0], _fair_sorted[0][0])}** "
+                        f"— {_fair_sorted[0][1]} ₪ לפריטים המשותפים."
+                    )
+                elif _eligible and not _common:
+                    st.info("אין אפילו פריט אחד שכל הרשתות כללו — לכן אי אפשר להציג השוואה הוגנת מלאה.")
 with tab_history:
     st.markdown("### 📊 היסטוריית ההשוואות שלך")
     hist = load_history()
