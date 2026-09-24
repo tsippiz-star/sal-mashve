@@ -1,3 +1,4 @@
+import time
 """
 app.py – אפליקציית ווב מקצועית להשוואת מחירי סל קניות.
 
@@ -51,6 +52,61 @@ _existing = sorted((x for x in _cands if x.exists()), key=lambda x: x.name)
 DB_SCAN = [(_x, _db_stats(_x)) for _x in _existing]
 DB_PATH = max(_existing, key=_db_score) if _existing else ROOT / "prices.db"
 DB_INFO = _db_stats(DB_PATH)
+
+# ─── רשתות שמוכרות גם אונליין (אפשר לערוך את הרשימה כאן) ───
+ONLINE_CHAINS = ["shufersal", "rami-levy", "yohananof", "tiv-taam",
+                 "keshet", "freshmarket", "paz"]
+
+
+def _filter_chains(_result, _keep_chains):
+    """מצמצם את תוצאת ההשוואה לרשתות שנבחרו."""
+    _keep = [c for c in _result["chains"] if c in _keep_chains]
+    if len(_keep) < 2:
+        return _result
+    _result["chains"] = _keep
+    for _m in _result.get("matched", []):
+        _m["prices"] = {c: v for c, v in _m["prices"].items() if c in _keep}
+    if "totals" in _result:
+        _result["totals"] = {c: v for c, v in _result["totals"].items() if c in _keep}
+    return _result
+
+
+
+# ─── משיכת המסד המתעדכן אוטומטית (ענף data, מה-Action היומי) ───
+REMOTE_DB_URL = "https://raw.githubusercontent.com/tsippiz-star/sal-mashve/data/prices.db"
+REMOTE_DB_PATH = Path("/tmp/prices_live.db")
+REMOTE_MAX_AGE_HOURS = 6
+
+
+def _fetch_remote_db():
+    """מוריד את המסד המעודכן (עד פעם ב-6 שעות). מחזיר נתיב או None."""
+    import urllib.request as _ur
+    try:
+        if REMOTE_DB_PATH.exists() and (time.time() - REMOTE_DB_PATH.stat().st_mtime) < REMOTE_MAX_AGE_HOURS * 3600:
+            return REMOTE_DB_PATH
+        _req = _ur.Request(REMOTE_DB_URL, headers={"User-Agent": "sal-mashve-app"})
+        _part = REMOTE_DB_PATH.with_suffix(".part")
+        with _ur.urlopen(_req, timeout=90) as _r, open(_part, "wb") as _f:
+            while True:
+                _buf = _r.read(1 << 20)
+                if not _buf:
+                    break
+                _f.write(_buf)
+        _part.replace(REMOTE_DB_PATH)
+        return REMOTE_DB_PATH
+    except Exception:
+        return REMOTE_DB_PATH if REMOTE_DB_PATH.exists() else None
+
+
+REMOTE_USED = False
+_remote_db = _fetch_remote_db()
+if _remote_db is not None:
+    _rc, _rr, _rs = _db_stats(_remote_db)
+    if _rc >= 3:   # המקור מתעדכן יומית — מעדיפים אותו על קובץ מקומי שעלול להיות ישן
+        DB_PATH, DB_INFO = _remote_db, (_rc, _rr, _rs)
+        DB_SCAN.append((_remote_db, (_rc, _rr, _rs)))
+        REMOTE_USED = True
+
 
 import comparator as _comparator
 import matcher as _matcher
@@ -278,12 +334,14 @@ def _chain_rows(_path):
 _chain_rows_db = _chain_rows(DB_PATH)
 _found_keys = [c for c, _n in _chain_rows_db]
 _found_names = [CHAINS_HE.get(c, c) for c in _found_keys]
-_missing_names = [CHAINS_HE.get(c, c) for c in ALL_CHAINS if c not in _found_keys]
+_missing_names = [CHAINS_HE.get(c, c) for c in ONLINE_CHAINS if c not in _found_keys]
 
 st.caption(
     f"📁 קובץ נתונים שנטען: `{DB_PATH.name}` · רשתות בקובץ: "
-    f"**{len(_found_keys)} מתוך 8** · גרסת קוד: `{APP_VERSION}`"
+    f"**{len(_found_keys)} מתוך {len(ONLINE_CHAINS)}** · גרסת קוד: `{APP_VERSION}`"
 )
+if REMOTE_USED:
+    st.caption("🔄 הנתונים נמשכו מהעדכון האוטומטי היומי (ענף data)")
 
 if _found_names:
     st.markdown("**הרשתות שנמצאו במסד:**")
@@ -292,15 +350,15 @@ if _found_names:
 if _missing_names:
     st.markdown("**⚠️ רשתות שלא נמצאו במסד:** " + "  ".join(f"`{n}`" for n in _missing_names))
 
-if len(_found_keys) < 8:
+if len(_found_keys) < len(ONLINE_CHAINS):
     st.warning(
-        f"⚠️ **נטענו רק {len(_found_keys)} מתוך 8 הרשתות.** "
+        f"⚠️ **נטענו רק {len(_found_keys)} מתוך {len(ONLINE_CHAINS)} הרשתות שמוכרות אונליין.** "
         + (f"חסרות: {', '.join(_missing_names)}. " if _missing_names else "")
         + "סימן שהאפליקציה קוראת קובץ נתונים ישן או חלקי — "
         "פִּתחי את 'למה נבחר הקובץ הזה?' למטה כדי לראות את כל הקבצים שנמצאו בריפו."
     )
 else:
-    st.success("✅ כל 8 הרשתות נטענו בהצלחה.")
+    st.success(f"✅ כל {len(ONLINE_CHAINS)} הרשתות האונליין נטענו בהצלחה.")
 
 with st.expander("🔎 למה נבחר הקובץ הזה? (כל קבצי הנתונים שנמצאו)", expanded=len(_found_keys) < 8):
     st.dataframe(
@@ -439,6 +497,23 @@ with _bcol2:
         "הלחיצה סורקת מחדש את הקבצים שבסביבת האפליקציה, מנקה זיכרון פנימי וטוענת את הקובץ הטוב ביותר. "
         "אם קובץ חדש עדיין לא הגיע לסביבה — הוא לא יימצא עד שהאפליקציה תתרענן מול גיטהאב."
     )
+
+_ALL_CHAIN_KEYS = ["shufersal", "rami-levy", "yohananof", "osher-ad",
+                   "tiv-taam", "keshet", "freshmarket", "paz"]
+_default_chains = [c for c in _ALL_CHAIN_KEYS if c in ONLINE_CHAINS]
+
+_selected_chains = st.multiselect(
+    "🛒 אילו רשתות ייכללו בהשוואה ובנתונים?",
+    options=_ALL_CHAIN_KEYS,
+    default=_default_chains,
+    format_func=lambda c: CHAINS_HE.get(c, c),
+    key="chains_selected",
+    help="ברירת המחדל היא רשתות שמוכרות גם אונליין. אפשר להוסיף או להסיר כל רשת — "
+         "הבחירה חלה על ההשוואה ועל לשונית כל הנתונים.",
+)
+st.caption(f"🛒 נבחרו {len(_selected_chains)} רשתות: "
+           + " · ".join(CHAINS_HE.get(c, c) for c in _selected_chains)
+           + ("" if len(_selected_chains) >= 2 else "  ⚠️ בחרי לפחות 2 רשתות"))
 
 tab_new, tab_data, tab_history, tab_help = st.tabs(["🔍 השוואה חדשה", "🗂️ כל הנתונים", "📊 היסטוריה", "❓ עזרה"])
 
@@ -613,6 +688,10 @@ with tab_new:
         else:
             with st.spinner(f"🔎 מחפש {len(items)} פריטים ברשתות..."):
                 result = compare(items)
+
+            # סינון לרשתות עם מכירה אונליין (לפי המתג שלמעלה)
+            result = _filter_chains(result, _selected_chains)
+            st.caption("🛒 הושוו " + " · ".join(CHAINS_HE.get(c, c) for c in result["chains"]))
 
             # ─── הסיכום משוקלל לפי הכמות (2 חלב = פעמיים המחיר) ───
             def _qty_for(_name):
@@ -843,6 +922,7 @@ with tab_data:
 
     CHAIN_KEYS = ["shufersal", "rami-levy", "yohananof", "osher-ad",
                   "tiv-taam", "keshet", "freshmarket", "paz"]
+    CHAIN_KEYS = [c for c in CHAIN_KEYS if c in _selected_chains]
     CHAIN_COLS = [CHAINS_HE.get(c, c) for c in CHAIN_KEYS]
 
     c1, c2, c3 = st.columns([2, 1, 1])
