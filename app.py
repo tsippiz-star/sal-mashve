@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent
 # 1) הכי הרבה רשתות   2) הכי הרבה שורות   3) קובץ בשם prices.db   4) הגודל
 # כך שגם אם הישן (שופרסל בלבד) יושב בשם prices.db, הוא לא ייבחר לעולם
 # כל עוד קיים קובץ עם יותר רשתות.
-APP_VERSION = "db-pick v3 · 2026-09-23"
+APP_VERSION = "db-pick v4 · 2026-09-24"
 
 
 def _db_stats(_p):
@@ -55,7 +55,8 @@ DB_INFO = _db_stats(DB_PATH)
 
 # ─── רשתות שמוכרות גם אונליין (אפשר לערוך את הרשימה כאן) ───
 ONLINE_CHAINS = ["shufersal", "rami-levy", "yohananof", "tiv-taam",
-                 "keshet", "freshmarket", "paz"]
+                 "keshet", "freshmarket", "paz",
+                 "carrefour", "hazi-hinam"]
 
 
 def _filter_chains(_result, _keep_chains):
@@ -316,7 +317,8 @@ import datetime as _dt
 import pandas as pd
 
 ALL_CHAINS = ["shufersal", "rami-levy", "yohananof", "osher-ad",
-              "tiv-taam", "keshet", "freshmarket", "paz"]
+              "tiv-taam", "keshet", "freshmarket", "paz",
+              "carrefour", "hazi-hinam"]
 
 
 def _chain_rows(_path):
@@ -360,7 +362,7 @@ if len(_found_keys) < len(ONLINE_CHAINS):
 else:
     st.success(f"✅ כל {len(ONLINE_CHAINS)} הרשתות האונליין נטענו בהצלחה.")
 
-with st.expander("🔎 למה נבחר הקובץ הזה? (כל קבצי הנתונים שנמצאו)", expanded=len(_found_keys) < 8):
+with st.expander("🔎 למה נבחר הקובץ הזה? (כל קבצי הנתונים שנמצאו)", expanded=len(_found_keys) < len(ONLINE_CHAINS)):
     st.dataframe(
         pd.DataFrame([
             {
@@ -378,7 +380,7 @@ with st.expander("🔎 למה נבחר הקובץ הזה? (כל קבצי הנת�
     st.caption(
         "סדר העדיפויות: 1) הכי הרבה רשתות · 2) הכי הרבה שורות · "
         "3) קובץ בשם prices.db · 4) הגודל. "
-        "כלומר קובץ עם 8 רשתות תמיד ינצח את הקובץ הישן עם הרשת הבודדת, "
+        "כלומר קובץ עם יותר רשתות תמיד ינצח את הקובץ הישן עם הרשת הבודדת, "
         "לא משנה איך הם נקראים."
     )
 
@@ -499,7 +501,8 @@ with _bcol2:
     )
 
 _ALL_CHAIN_KEYS = ["shufersal", "rami-levy", "yohananof", "osher-ad",
-                   "tiv-taam", "keshet", "freshmarket", "paz"]
+                   "tiv-taam", "keshet", "freshmarket", "paz",
+                   "carrefour", "hazi-hinam"]
 _default_chains = [c for c in _ALL_CHAIN_KEYS if c in ONLINE_CHAINS]
 
 _selected_chains = st.multiselect(
@@ -921,7 +924,8 @@ with tab_data:
     st.caption("כל הנתונים שנאספו מהרשתות — חיפוש לפי שם מוצר או ברקוד, והורדה לאקסל.")
 
     CHAIN_KEYS = ["shufersal", "rami-levy", "yohananof", "osher-ad",
-                  "tiv-taam", "keshet", "freshmarket", "paz"]
+                  "tiv-taam", "keshet", "freshmarket", "paz",
+                  "carrefour", "hazi-hinam"]
     CHAIN_KEYS = [c for c in CHAIN_KEYS if c in _selected_chains]
     CHAIN_COLS = [CHAINS_HE.get(c, c) for c in CHAIN_KEYS]
 
@@ -975,7 +979,7 @@ with tab_data:
     # ─── תרשים: איזו רשת היא הזולה ביותר ───
     st.markdown("---")
     st.markdown("### 🏆 איזו רשת יוצאת הזולה ביותר?")
-    st.caption("לכל מוצר שבסינון הנוכחי נבדק המחיר בכל 8 הרשתות, וכל פריט נזקף לרשת שהציעה בו את המחיר הנמוך.")
+    st.caption(f"לכל מוצר שבסינון הנוכחי נבדק המחיר בכל {len(CHAIN_COLS)} הרשתות, וכל פריט נזקף לרשת שהציעה בו את המחיר הנמוך.")
 
     sql_all = f"""
         SELECT barcode,
