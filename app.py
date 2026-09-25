@@ -14,7 +14,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from comparator import compare, CHAINS_HE
+from comparator import compare, CHAINS_HE, per_kg, produce_prices, PRODUCE_ITEMS
 from matcher import find_candidates
 
 # ─── הגדרות בסיסיות ────────────────────────────────────
@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent
 # 1) הכי הרבה רשתות   2) הכי הרבה שורות   3) קובץ בשם prices.db   4) הגודל
 # כך שגם אם הישן (שופרסל בלבד) יושב בשם prices.db, הוא לא ייבחר לעולם
 # כל עוד קיים קובץ עם יותר רשתות.
-APP_VERSION = "db-pick v4 · 2026-09-24"
+APP_VERSION = "db-pick v5 · 2026-09-25"
 
 
 def _db_stats(_p):
@@ -518,7 +518,7 @@ st.caption(f"🛒 נבחרו {len(_selected_chains)} רשתות: "
            + " · ".join(CHAINS_HE.get(c, c) for c in _selected_chains)
            + ("" if len(_selected_chains) >= 2 else "  ⚠️ בחרי לפחות 2 רשתות"))
 
-tab_new, tab_data, tab_history, tab_help = st.tabs(["🔍 השוואה חדשה", "🗂️ כל הנתונים", "📊 היסטוריה", "❓ עזרה"])
+tab_new, tab_produce, tab_data, tab_history, tab_help = st.tabs(["🔍 השוואה חדשה", "🥕 ירקות ופירות", "🗂️ כל הנתונים", "📊 היסטוריה", "❓ עזרה"])
 
 with tab_new:
     st.markdown("### ✍️ מה יש בסל?")
@@ -645,20 +645,36 @@ with tab_new:
         import re as _re
 
         def _qty_and_name(_line):
-            """מחלץ כמות ושם מוצר משורה — '2 חלב 3%' / 'חלב 3% x2' / 'חלב 3%'."""
+            """כמות ושם מוצר. תומך גם במשקל: '2 קילו עגבניות' / 'עגבניות 1.5 ק"ג' / '500 גרם עגבניות'."""
             _s = str(_line).strip()
+            _KG = r'(?:ק"?ג|קילו(?:גרם)?|קילוגרם|קג)'
+            _m = _re.match(rf"^\s*(\d+(?:[.,]\d+)?)\s*{_KG}\s+(.+)$", _s)
+            if _m:
+                return float(_m.group(1).replace(",", ".")), _m.group(2).strip(), True
+            _m = _re.match(rf"^(.+?)\s+(\d+(?:[.,]\d+)?)\s*{_KG}\s*$", _s)
+            if _m:
+                return float(_m.group(2).replace(",", ".")), _m.group(1).strip(), True
+            _m = _re.match(r"^\s*(\d+(?:[.,]\d+)?)\s*(?:גרם|גר'|גר)\s+(.+)$", _s)
+            if _m:
+                return float(_m.group(1).replace(",", ".")) / 1000.0, _m.group(2).strip(), True
+            _m = _re.match(r"^(.+?)\s+(\d+(?:[.,]\d+)?)\s*(?:גרם|גר')\s*$", _s)
+            if _m:
+                return float(_m.group(2).replace(",", ".")) / 1000.0, _m.group(1).strip(), True
             _m1 = _re.match(r"^\s*(\d+(?:[.,]\d+)?)\s*[xX*×]?\s+(.+)$", _s)
             if _m1:
-                return float(_m1.group(1).replace(",", ".")), _m1.group(2).strip()
+                return float(_m1.group(1).replace(",", ".")), _m1.group(2).strip(), False
             _m2 = _re.match(r"^(.+?)\s*[xX*×]\s*(\d+(?:[.,]\d+)?)$", _s)
             if _m2:
-                return float(_m2.group(2).replace(",", ".")), _m2.group(1).strip()
-            return 1.0, _s
+                return float(_m2.group(2).replace(",", ".")), _m2.group(1).strip(), False
+            return 1.0, _s, False
 
-        _pairs = []
+        _pairs, _weight_items = [], []
         for _line in txt.splitlines():
             if _line.strip():
-                _pairs.append(_qty_and_name(_line))
+                _q, _n2, _byw = _qty_and_name(_line)
+                _pairs.append((_q, _n2))
+                if _byw:
+                    _weight_items.append(_n2)
 
         try:
             _tbl = tbl_out if isinstance(tbl_out, pd.DataFrame) else pd.DataFrame(tbl_out)
@@ -695,6 +711,16 @@ with tab_new:
             # סינון לרשתות עם מכירה אונליין (לפי המתג שלמעלה)
             result = _filter_chains(result, _selected_chains)
             st.caption("🛒 הושוו " + " · ".join(CHAINS_HE.get(c, c) for c in result["chains"]))
+            if _weight_items:
+                st.caption("⚖️ פריטים לפי משקל: " + " · ".join(_weight_items)
+                           + " — המחיר מוכפל במספר הקילוגרמים שהזנת.")
+                _not_kg = [m["query"] for m in result["matched"]
+                           if m["query"] in _weight_items
+                           and not any(k in str(m["product"].get("unit", ""))
+                                       for k in ("גרם", "קילו", 'ק"ג', "קג"))]
+                if _not_kg:
+                    st.warning("⚠️ אלה זוהו כמוצר לפי יחידה/אריזה ולא לפי משקל: " + ", ".join(_not_kg)
+                               + " — להשוואה לפי קילו עברי ללשונית 🥕 ירקות ופירות.")
 
             # ─── הסיכום משוקלל לפי הכמות (2 חלב = פעמיים המחיר) ───
             def _qty_for(_name):
@@ -1022,3 +1048,133 @@ with tab_data:
         )
         st.caption("החישוב מבוסס על הסינון שבחרת למעלה (חיפוש / מספר רשתות). "
                    "שימי לב: זו ספירת 'מי הזול בפריט הבודד' — לא בהכרח הסל הכולל הזול ביותר.")
+
+
+# ═══════════════════════════════════════════════════════
+# ─── לשונית: ירקות ופירות לפי קילו ─────────────────────
+# ═══════════════════════════════════════════════════════
+with tab_produce:
+    st.markdown("### 🥕 ירקות ופירות — השוואה לפי קילו")
+    st.caption("המחירים כאן הם **מחיר לקילו (₪ לק\"ג)**. לכל רשת נלקח המוצר **הזול ביותר לקילו** "
+               "מבין מוצרי הירק/פרי שהיחידה שלהם היא קילו (ק\"ג / קילוגרם) באותה רשת. "
+               "רשת שלא מופיעה — לא מפרסמת את הירק לפי משקל.")
+
+    _produce_names = [x["he"] for x in PRODUCE_ITEMS]
+    _produce_default = [x for x in ["עגבניות", "מלפפונים", "בננות", "תפוחים",
+                                    "תפוחי אדמה", "גזר", "בצל", "פלפלים", "ענבים", "מנגו"]
+                        if x in _produce_names]
+    _produce_pick = st.multiselect(
+        "אילו ירקות ופירות להשוות?",
+        options=_produce_names,
+        default=_produce_default,
+        key="produce_pick",
+        help="הבחירה חלה על הטבלה, על התרשים ועל חישוב הסל בקילו.",
+    )
+
+    if not _produce_pick:
+        st.info("בחרי לפחות ירק או פרי אחד.")
+    else:
+        _defs = [x for x in PRODUCE_ITEMS if x["he"] in _produce_pick]
+        with st.spinner("🔎 מחשב מחיר לקילו בכל רשת..."):
+            _pmap = produce_prices(_defs, chains=_selected_chains)
+        _pchains = [c for c in _ALL_CHAIN_KEYS
+                    if c in _selected_chains and any(c in v for v in _pmap.values())]
+
+        if not _pchains:
+            st.warning("לא נמצאו מוצרים לפי משקל לירקות/פירות שבחרת ברשתות שנבחרו.")
+        else:
+            _pcols = [CHAINS_HE.get(c, c) for c in _pchains]
+
+            # ─── טבלת מחיר לקילו ───
+            _tbl_rows = []
+            for _nm in _produce_pick:
+                _row = {"ירק / פרי": _nm}
+                _vals = []
+                for _c in _pchains:
+                    _v = _pmap.get(_nm, {}).get(_c)
+                    _row[CHAINS_HE.get(_c, _c)] = _v[0] if _v else None
+                    if _v:
+                        _vals.append(_v[0])
+                _have = {h: _row[h] for h in _pcols if _row.get(h) is not None}
+                if _have:
+                    _best = min(_have, key=lambda h: _have[h])
+                    _row["הזול לקילו"] = _have[_best]
+                    _row["רשת זולה"] = _best
+                else:
+                    _row["הזול לקילו"] = None
+                    _row["רשת זולה"] = "—"
+                _tbl_rows.append(_row)
+            _df_p = pd.DataFrame(_tbl_rows).set_index("ירק / פרי")
+            st.markdown("#### 📋 מחיר לקילו בכל רשת")
+            st.dataframe(_df_p, use_container_width=True)
+            st.download_button(
+                "⬇️ הורדת טבלת המחירים לקילו (CSV)",
+                _df_p.reset_index().to_csv(index=False).encode("utf-8-sig"),
+                file_name="ירקות_ופירות_לפי_קילו.csv",
+                mime="text/csv",
+            )
+
+            # ─── כמויות בקילו ───
+            st.markdown("---")
+            st.markdown("#### ⚖️ הסל שלי בקילו")
+            _kg_vals = {}
+            _ncol = 4
+            _cols = st.columns(_ncol)
+            for _i, _nm in enumerate(_produce_pick):
+                with _cols[_i % _ncol]:
+                    _kg_vals[_nm] = st.number_input(
+                        f"{_nm} (ק\"ג)", min_value=0.0, value=1.0, step=0.5,
+                        key=f"prod_kg_{_nm}",
+                    )
+
+            _totals = {}
+            for _c in _pchains:
+                _sum, _cnt, _miss = 0.0, 0, []
+                for _nm in _produce_pick:
+                    _v = _pmap.get(_nm, {}).get(_c)
+                    if _v is None:
+                        _miss.append(_nm)
+                    else:
+                        _sum += _v[0] * float(_kg_vals.get(_nm, 0.0))
+                        _cnt += 1
+                _totals[_c] = {"total": round(_sum, 2), "items": _cnt, "missing": _miss}
+
+            _sorted = sorted(_totals.items(), key=lambda kv: kv[1]["total"])
+            _cheap_c, _cheap_v = _sorted[0]
+            _exp_c, _exp_v = _sorted[-1]
+
+            _rows_tot = [{
+                "רשת": CHAINS_HE.get(_c, _c),
+                "סה\"כ לסל (₪)": _v["total"],
+                "פריטים שנמצאו": _v["items"],
+                "חסרים": len(_v["missing"]),
+            } for _c, _v in _sorted]
+            st.dataframe(pd.DataFrame(_rows_tot), use_container_width=True, hide_index=True)
+
+            if _cheap_v["total"] > 0:
+                _save = round(_exp_v["total"] - _cheap_v["total"], 2)
+                st.success(
+                    f"🏆 הזול לסל הירקות והפירות: **{CHAINS_HE.get(_cheap_c, _cheap_c)}** — "
+                    f"**{_cheap_v['total']:.2f} ₪** · היקר: {CHAINS_HE.get(_exp_c, _exp_c)} "
+                    f"({_exp_v['total']:.2f} ₪) · חיסכון של **{_save:.2f} ₪**."
+                )
+                st.bar_chart(pd.DataFrame(_rows_tot).set_index("רשת")["סה\"כ לסל (₪)"])
+
+            if any(_v["missing"] for _v in _totals.values()):
+                for _c, _v in _sorted:
+                    if _v["missing"]:
+                        st.caption(f"⚠️ {CHAINS_HE.get(_c, _c)} ללא מחיר לפי משקל עבור: "
+                                   + " · ".join(_v["missing"]))
+
+            with st.expander("🔍 איזה מוצר נבחר לכל רשת (ולמה המחיר הזה)"):
+                _src = []
+                for _nm in _produce_pick:
+                    for _c, _v in _pmap.get(_nm, {}).items():
+                        if _c in _pchains:
+                            _src.append({"ירק / פרי": _nm, "רשת": CHAINS_HE.get(_c, _c),
+                                         "המוצר שנבחר": _v[1], "₪ לקילו": _v[0]})
+                if _src:
+                    st.dataframe(pd.DataFrame(_src).sort_values(["ירק / פרי", "₪ לקילו"]),
+                                 use_container_width=True, hide_index=True, height=320)
+                st.caption("הבחירה: המוצר הזול ביותר לקילו בכל רשת מבין המוצרים שנמכרים לפי משקל. "
+                           "אם לרשת יש כמה מוצרים לאותו ירק — מוצג הזול שבהם.")
