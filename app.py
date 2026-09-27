@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent
 # 1) הכי הרבה רשתות   2) הכי הרבה שורות   3) קובץ בשם prices.db   4) הגודל
 # כך שגם אם הישן (שופרסל בלבד) יושב בשם prices.db, הוא לא ייבחר לעולם
 # כל עוד קיים קובץ עם יותר רשתות.
-APP_VERSION = "db-pick v5 · 2026-09-25"
+APP_VERSION = "db-look v6 · 2026-09-27"
 
 
 def _db_stats(_p):
@@ -125,6 +125,53 @@ st.set_page_config(
                  "נתונים מקבצי שקיפות מחירים רשמיים.",
     },
 )
+
+# ─── שכבת עיצוב (CSS) ───
+st.markdown("""<style>
+/* ===== סל משווה — שכבת עיצוב ===== */
+:root{
+  --sm-green:#0E7C5A; --sm-green-dark:#0A5C43; --sm-green-soft:#E8F4EE;
+  --sm-amber:#F2A03D; --sm-cream:#FFFDF8; --sm-ink:#16241E; --sm-muted:#5C6F66;
+  --sm-line:#E3EAE4; --sm-shadow:0 6px 20px rgba(20,60,45,.08);
+}
+html, body, [class*="css"], .stApp{font-family:"Heebo","Rubik","Segoe UI",system-ui,-apple-system,"Arial Hebrew",Arial,sans-serif;}
+.stApp{background:linear-gradient(180deg,#FFFDF8 0%, #F5FAF6 100%);}
+.sm-hero{background:linear-gradient(135deg,#0A5E45 0%, #0E7C5A 55%, #14906A 100%);color:#fff;border-radius:22px;padding:26px 24px;box-shadow:0 10px 26px rgba(14,124,90,.22);direction:rtl;margin-bottom:14px}
+.sm-hero h1{margin:0 0 8px;font-size:30px;font-weight:800;letter-spacing:-.3px;line-height:1.2}
+.sm-hero p{margin:0;font-size:16.5px;color:#F1FFF9;line-height:1.6}
+.sm-steps{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+.sm-step{background:#FFFFFF;color:#0A5C43;border:0;border-radius:14px;padding:10px 14px;font-size:14px;font-weight:800;box-shadow:0 4px 12px rgba(0,0,0,.12)}
+.sm-card{background:#fff;border:1px solid var(--sm-line);border-radius:18px;padding:16px 18px;box-shadow:var(--sm-shadow);margin:10px 0;direction:rtl}
+.sm-card h3{margin:0 0 10px;font-size:17px;font-weight:800;color:var(--sm-ink)}
+.sm-win{background:linear-gradient(135deg,#FFF6E7,#FFE9CC);border:1px solid #F3D5A4}
+.sm-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 0;line-height:1.6;border-bottom:1px dashed var(--sm-line)}
+.sm-row:last-child{border-bottom:0}
+.sm-badge{display:inline-block;background:var(--sm-green-soft);color:var(--sm-green-dark);border-radius:999px;padding:5px 12px;font-size:12.5px;font-weight:800;margin:4px 0}
+.sm-badge-warn{background:#FFF1DC;color:#9A5B00}
+.sm-price{font-variant-numeric:tabular-nums;font-weight:800;font-size:19px;color:var(--sm-green-dark)}
+.sm-price-hi{color:#B4471F}
+.sm-muted{color:var(--sm-muted);font-size:14.5px}
+.sm-bar{height:10px;margin-top:10px;border-radius:999px;background:var(--sm-green-soft);overflow:hidden}
+.sm-bar>i{display:block;height:100%;background:linear-gradient(90deg,#17A06F,#0E7C5A)}
+div.stButton>button{border-radius:14px!important;font-weight:700!important;border:1px solid var(--sm-line)!important;padding:.55rem 1.1rem!important}
+div.stButton>button[kind="primary"]{background:linear-gradient(135deg,#0E7C5A,#17A06F)!important;border-color:#0E7C5A!important;color:#fff!important;box-shadow:0 6px 16px rgba(14,124,90,.25)!important}
+div.stButton>button:hover{border-color:#0E7C5A!important;color:#0A5C43!important}
+button[data-baseweb="tab"]{font-weight:700!important;font-size:15px!important}
+button[data-baseweb="tab"][aria-selected="true"]{color:#0E7C5A!important}
+[data-testid="stMetric"]{background:#fff;border:1px solid var(--sm-line);border-radius:16px;padding:12px 14px;box-shadow:var(--sm-shadow)}
+[data-testid="stMetricValue"]{font-size:22px!important;font-weight:800!important;color:#0A5C43}
+[data-testid="stExpander"]{border:1px solid var(--sm-line)!important;border-radius:16px!important;background:#fff!important;overflow:hidden}
+[data-testid="stDataFrame"]{border-radius:16px!important;overflow:hidden;border:1px solid var(--sm-line)}
+[data-testid="stFileUploader"]{background:#fff;border-radius:16px;padding:10px;border:1px dashed var(--sm-line)}
+div[data-testid="stAlert"]{border-radius:16px!important;border:1px solid var(--sm-line)}
+@media (max-width:640px){
+  .sm-hero{padding:20px 16px;border-radius:18px}
+  .sm-hero h1{font-size:24px}
+  .sm-hero p{font-size:15px}
+  .sm-step{font-size:13px;padding:8px 11px}
+}
+</style>""", unsafe_allow_html=True)
+
 
 # ─── עיצוב מודרני + RTL + PWA ─────────────────────────
 st.markdown("""
@@ -255,6 +302,18 @@ def get_db_info():
     return info
 
 
+def _db_misc():
+    """מספר מוצרים ייחודיים + תאריך העדכון האחרון - לתצוגת הכותרת."""
+    try:
+        _c = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        _b = _c.execute("SELECT COUNT(DISTINCT barcode) FROM prices").fetchone()[0]
+        _u = _c.execute("SELECT MAX(updated_at) FROM prices").fetchone()[0]
+        _c.close()
+        return (_b or 0), (_u or "")
+    except Exception:
+        return 0, ""
+
+
 # ─── שמירת היסטוריה מקומית (בדפדפן) ──────────────
 def load_history():
     if "history" not in st.session_state:
@@ -281,16 +340,28 @@ def save_to_history(items, result):
 
 
 # ─── כותרת עליונה ─────────────────────────────
-col_title, col_status = st.columns([3, 1])
-with col_title:
-    st.markdown("# 🛒 סל משווה")
-    st.markdown("**השוואת מחירים חכמה בין רשתות המזון בישראל** · נתונים חיים מקבצי שקיפות מחירים")
+info = get_db_info()
+_uniq, _last_upd = _db_misc()
+total = sum(cnt for _, cnt, _ in info) if info else 0
 
-with col_status:
-    info = get_db_info()
-    if info:
-        total = sum(cnt for _, cnt, _ in info)
-        st.metric("מחירים במאגר", f"{total:,}")
+st.markdown("""
+<div class="sm-hero">
+  <h1>🛒 סל משווה</h1>
+  <p>מקלידים את הסל — ורואים מיד באיזו רשת קונים בזול. נתונים חיים מאתרי שקיפות המחירים של הרשתות.</p>
+  <div class="sm-steps">
+    <span class="sm-step">1️⃣ בוחרים רשתות</span>
+    <span class="sm-step">2️⃣ כותבים את הסל</span>
+    <span class="sm-step">3️⃣ רואים מי הזול</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+if info:
+    _c1, _c2, _c3, _c4 = st.columns(4)
+    _c1.metric("מחירים במאגר", f"{total:,}")
+    _c2.metric("מוצרים ייחודיים", f"{_uniq:,}")
+    _c3.metric("רשתות", f"{len(info)}")
+    _c4.metric("עדכון אחרון", (_last_upd or "—")[:10])
 
 # ─── בדיקה שיש נתונים ─────────────────────────
 if not info:
@@ -518,7 +589,7 @@ st.caption(f"🛒 נבחרו {len(_selected_chains)} רשתות: "
            + " · ".join(CHAINS_HE.get(c, c) for c in _selected_chains)
            + ("" if len(_selected_chains) >= 2 else "  ⚠️ בחרי לפחות 2 רשתות"))
 
-tab_new, tab_produce, tab_data, tab_history, tab_help = st.tabs(["🔍 השוואה חדשה", "🥕 ירקות ופירות", "🗂️ כל הנתונים", "📊 היסטוריה", "❓ עזרה"])
+tab_new, tab_produce, tab_data, tab_history, tab_help = st.tabs(["🛒 השוואה", "🥕 ירקות ופירות", "🗂️ כל המחירים", "📊 ההיסטוריה שלי", "❓ איך זה עובד"])
 
 with tab_new:
     st.markdown("### ✍️ מה יש בסל?")
@@ -638,7 +709,7 @@ with tab_new:
         key="input_area",
     )
 
-    compare_btn = st.button("🔍 השווי את הסל", use_container_width=True, type="primary")
+    compare_btn = st.button("⚖️ השווי את הסל", use_container_width=True, type="primary")
 
     if compare_btn:
         # ─── איסוף הפריטים יחד עם הכמויות (מהטקסט וגם מהטבלה) ───
