@@ -1,34 +1,35 @@
-import time
 """
-app.py – אפליקציית ווב מקצועית להשוואת מחירי סל קניות.
+app.py – סל משווה · השוואת מחירי סל קניות בין רשתות המזון בישראל.
+עיצוב v7 — "מזמין וידידותי".
 
 הפעלה מקומית:
-    streamlit run src/app.py
+    streamlit run app.py
 
-פריסה בענן: ראי DEPLOY.md
+קבצים נדרשים באותה תיקייה: comparator.py, matcher.py, sm_style.py, prices.db
 """
-import json
+import io as _io
+import re as _re
 import sqlite3
-from datetime import datetime
+import time
+import datetime as _dt
+from datetime import datetime, timedelta as _tdelta, timezone as _tz
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
-from comparator import compare, CHAINS_HE, per_kg, produce_prices, PRODUCE_ITEMS
-from matcher import find_candidates
+from comparator import CHAINS_HE, produce_prices, PRODUCE_ITEMS
+from matcher import match_item, find_candidates
+import sm_style as ui
 
-# ─── הגדרות בסיסיות ────────────────────────────────────
+APP_VERSION = "db-look v7 · עיצוב חדש · 2026-09-27"
 ROOT = Path(__file__).resolve().parent
-# מאתר את המסד גם כשהקבצים בשורש הריפו וגם בתוך תיקיית src
-# ─── בחירת קובץ המסד: סדר עדיפויות מפורש ───
-# 1) הכי הרבה רשתות   2) הכי הרבה שורות   3) קובץ בשם prices.db   4) הגודל
-# כך שגם אם הישן (שופרסל בלבד) יושב בשם prices.db, הוא לא ייבחר לעולם
-# כל עוד קיים קובץ עם יותר רשתות.
-APP_VERSION = "db-look v6 · 2026-09-27"
 
-
+# ═══════════════════════════════════════════════════════
+# 1) בחירת קובץ המסד — ללא שינוי מהגרסה הקודמת
+#    1) הכי הרבה רשתות  2) הכי הרבה שורות  3) קובץ בשם prices.db  4) הגודל
+# ═══════════════════════════════════════════════════════
 def _db_stats(_p):
-    """(רשתות, שורות, גודל) — עובד גם כששם הקובץ מכיל רווחים וסוגריים."""
     _size = _p.stat().st_size
     for _target, _is_uri in ((f"file:{_p}?mode=ro", True), (str(_p), False)):
         try:
@@ -53,25 +54,11 @@ DB_SCAN = [(_x, _db_stats(_x)) for _x in _existing]
 DB_PATH = max(_existing, key=_db_score) if _existing else ROOT / "prices.db"
 DB_INFO = _db_stats(DB_PATH)
 
-# ─── רשתות שמוכרות גם אונליין (אפשר לערוך את הרשימה כאן) ───
+# רשתות שמוכרות גם אונליין (ברירת המחדל בהשוואה)
 ONLINE_CHAINS = ["shufersal", "rami-levy", "yohananof", "tiv-taam",
-                 "keshet", "freshmarket", "paz",
-                 "carrefour", "hazi-hinam"]
-
-
-def _filter_chains(_result, _keep_chains):
-    """מצמצם את תוצאת ההשוואה לרשתות שנבחרו."""
-    _keep = [c for c in _result["chains"] if c in _keep_chains]
-    if len(_keep) < 2:
-        return _result
-    _result["chains"] = _keep
-    for _m in _result.get("matched", []):
-        _m["prices"] = {c: v for c, v in _m["prices"].items() if c in _keep}
-    if "totals" in _result:
-        _result["totals"] = {c: v for c, v in _result["totals"].items() if c in _keep}
-    return _result
-
-
+                 "keshet", "freshmarket", "paz", "carrefour", "hazi-hinam"]
+ALL_CHAINS = ["shufersal", "rami-levy", "yohananof", "osher-ad",
+              "tiv-taam", "keshet", "freshmarket", "paz", "carrefour", "hazi-hinam"]
 
 # ─── משיכת המסד המתעדכן אוטומטית (ענף data, מה-Action היומי) ───
 REMOTE_DB_URL = "https://raw.githubusercontent.com/tsippiz-star/sal-mashve/data/prices.db"
@@ -80,7 +67,6 @@ REMOTE_MAX_AGE_HOURS = 6
 
 
 def _fetch_remote_db():
-    """מוריד את המסד המעודכן (עד פעם ב-6 שעות). מחזיר נתיב או None."""
     import urllib.request as _ur
     try:
         if REMOTE_DB_PATH.exists() and (time.time() - REMOTE_DB_PATH.stat().st_mtime) < REMOTE_MAX_AGE_HOURS * 3600:
@@ -103,209 +89,53 @@ REMOTE_USED = False
 _remote_db = _fetch_remote_db()
 if _remote_db is not None:
     _rc, _rr, _rs = _db_stats(_remote_db)
-    if _rc >= 3:   # המקור מתעדכן יומית — מעדיפים אותו על קובץ מקומי שעלול להיות ישן
+    if _rc >= 3:
         DB_PATH, DB_INFO = _remote_db, (_rc, _rr, _rs)
         DB_SCAN.append((_remote_db, (_rc, _rr, _rs)))
         REMOTE_USED = True
-
 
 import comparator as _comparator
 import matcher as _matcher
 _comparator.DB_PATH = DB_PATH
 _matcher.DB_PATH = DB_PATH
-HISTORY_PATH = Path(__file__).parent / "user_history.json"
 
+# ═══════════════════════════════════════════════════════
+# 2) הגדרות עמוד + עיצוב
+# ═══════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="🛒 סל משווה – ישראל",
+    page_title="סל משווה – הסל הכי זול בישראל",
     page_icon="🛒",
     layout="wide",
     initial_sidebar_state="collapsed",
-    menu_items={
-        "About": "השוואת מחירים חכמה בין רשתות המזון בישראל.\n"
-                 "נתונים מקבצי שקיפות מחירים רשמיים.",
-    },
+    menu_items={"About": "השוואת מחירים חכמה בין רשתות המזון בישראל.\nנתונים מקבצי שקיפות מחירים רשמיים."},
 )
-
-# ─── שכבת עיצוב (CSS) ───
-st.markdown("""<style>
-/* ===== סל משווה — שכבת עיצוב ===== */
-:root{
-  --sm-green:#0E7C5A; --sm-green-dark:#0A5C43; --sm-green-soft:#E8F4EE;
-  --sm-amber:#F2A03D; --sm-cream:#FFFDF8; --sm-ink:#16241E; --sm-muted:#5C6F66;
-  --sm-line:#E3EAE4; --sm-shadow:0 6px 20px rgba(20,60,45,.08);
-}
-html, body, [class*="css"], .stApp{font-family:"Heebo","Rubik","Segoe UI",system-ui,-apple-system,"Arial Hebrew",Arial,sans-serif;}
-.stApp{background:linear-gradient(180deg,#FFFDF8 0%, #F5FAF6 100%);}
-.sm-hero{background:linear-gradient(135deg,#0A5E45 0%, #0E7C5A 55%, #14906A 100%);color:#fff;border-radius:22px;padding:26px 24px;box-shadow:0 10px 26px rgba(14,124,90,.22);direction:rtl;margin-bottom:14px}
-.sm-hero h1{margin:0 0 8px;font-size:30px;font-weight:800;letter-spacing:-.3px;line-height:1.2}
-.sm-hero p{margin:0;font-size:16.5px;color:#F1FFF9;line-height:1.6}
-.sm-steps{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
-.sm-step{background:#FFFFFF;color:#0A5C43;border:0;border-radius:14px;padding:10px 14px;font-size:14px;font-weight:800;box-shadow:0 4px 12px rgba(0,0,0,.12)}
-.sm-card{background:#fff;border:1px solid var(--sm-line);border-radius:18px;padding:16px 18px;box-shadow:var(--sm-shadow);margin:10px 0;direction:rtl}
-.sm-card h3{margin:0 0 10px;font-size:17px;font-weight:800;color:var(--sm-ink)}
-.sm-win{background:linear-gradient(135deg,#FFF6E7,#FFE9CC);border:1px solid #F3D5A4}
-.sm-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 0;line-height:1.6;border-bottom:1px dashed var(--sm-line)}
-.sm-row:last-child{border-bottom:0}
-.sm-badge{display:inline-block;background:var(--sm-green-soft);color:var(--sm-green-dark);border-radius:999px;padding:5px 12px;font-size:12.5px;font-weight:800;margin:4px 0}
-.sm-badge-warn{background:#FFF1DC;color:#9A5B00}
-.sm-price{font-variant-numeric:tabular-nums;font-weight:800;font-size:19px;color:var(--sm-green-dark)}
-.sm-price-hi{color:#B4471F}
-.sm-muted{color:var(--sm-muted);font-size:14.5px}
-.sm-bar{height:10px;margin-top:10px;border-radius:999px;background:var(--sm-green-soft);overflow:hidden}
-.sm-bar>i{display:block;height:100%;background:linear-gradient(90deg,#17A06F,#0E7C5A)}
-div.stButton>button{border-radius:14px!important;font-weight:700!important;border:1px solid var(--sm-line)!important;padding:.55rem 1.1rem!important}
-div.stButton>button[kind="primary"]{background:linear-gradient(135deg,#0E7C5A,#17A06F)!important;border-color:#0E7C5A!important;color:#fff!important;box-shadow:0 6px 16px rgba(14,124,90,.25)!important}
-div.stButton>button:hover{border-color:#0E7C5A!important;color:#0A5C43!important}
-button[data-baseweb="tab"]{font-weight:700!important;font-size:15px!important}
-button[data-baseweb="tab"][aria-selected="true"]{color:#0E7C5A!important}
-[data-testid="stMetric"]{background:#fff;border:1px solid var(--sm-line);border-radius:16px;padding:12px 14px;box-shadow:var(--sm-shadow)}
-[data-testid="stMetricValue"]{font-size:22px!important;font-weight:800!important;color:#0A5C43}
-[data-testid="stExpander"]{border:1px solid var(--sm-line)!important;border-radius:16px!important;background:#fff!important;overflow:hidden}
-[data-testid="stDataFrame"]{border-radius:16px!important;overflow:hidden;border:1px solid var(--sm-line)}
-[data-testid="stFileUploader"]{background:#fff;border-radius:16px;padding:10px;border:1px dashed var(--sm-line)}
-div[data-testid="stAlert"]{border-radius:16px!important;border:1px solid var(--sm-line)}
-@media (max-width:640px){
-  .sm-hero{padding:20px 16px;border-radius:18px}
-  .sm-hero h1{font-size:24px}
-  .sm-hero p{font-size:15px}
-  .sm-step{font-size:13px;padding:8px 11px}
-}
-</style>""", unsafe_allow_html=True)
+ui.inject_css()
+st.markdown('<link rel="manifest" href="/static/manifest.json"><meta name="theme-color" content="#1F7A5A">'
+            '<meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="סל משווה">',
+            unsafe_allow_html=True)
 
 
-# ─── עיצוב מודרני + RTL + PWA ─────────────────────────
-st.markdown("""
-<link rel="manifest" href="/static/manifest.json">
-<meta name="theme-color" content="#d32f2f">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="סל משווה">
-
-<style>
-/* ─── RTL ─── */
-html, body, [class*="css"], .stApp, .main, .block-container {
-    direction: rtl !important;
-    text-align: right !important;
-    font-family: 'Assistant', 'Rubik', -apple-system, BlinkMacSystemFont, sans-serif;
-}
-
-/* ─── רקע וגרדיאנט ─── */
-.stApp {
-    background: linear-gradient(180deg, #fef3f2 0%, #ffffff 15%);
-}
-
-/* ─── כותרות ─── */
-h1 { color: #b71c1c; font-weight: 800; }
-h2, h3 { color: #7f1d1d; }
-
-/* ─── כפתורים ─── */
-.stButton>button {
-    background: linear-gradient(135deg, #d32f2f 0%, #b71c1c 100%);
-    color: white;
-    font-weight: 700;
-    border: none;
-    padding: 0.7rem 1.5rem;
-    border-radius: 12px;
-    box-shadow: 0 4px 6px rgba(211, 47, 47, 0.2);
-    transition: transform 0.2s, box-shadow 0.2s;
-    font-size: 16px;
-}
-.stButton>button:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 12px rgba(211, 47, 47, 0.3);
-}
-
-/* ─── תיבת טקסט ─── */
-.stTextArea textarea {
-    direction: rtl;
-    text-align: right;
-    font-size: 16px;
-    border-radius: 12px;
-    border: 2px solid #fecaca;
-    padding: 12px;
-    font-family: inherit;
-    background: #fffbfb;
-}
-.stTextArea textarea:focus {
-    border-color: #d32f2f;
-    box-shadow: 0 0 0 3px rgba(211, 47, 47, 0.1);
-}
-
-/* ─── מטריקות ─── */
-[data-testid="stMetricValue"] {
-    font-size: 2rem !important;
-    color: #b71c1c;
-    font-weight: 800;
-}
-[data-testid="stMetricLabel"] {
-    font-weight: 600;
-}
-
-/* ─── כרטיסי תוצאות ─── */
-.result-card {
-    background: white;
-    border-radius: 16px;
-    padding: 1rem 1.5rem;
-    margin: 0.5rem 0;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-    border-right: 4px solid #d32f2f;
-}
-.winner-card {
-    background: linear-gradient(135deg, #fef9c3 0%, #fef08a 100%);
-    border-right: 4px solid #eab308;
-}
-
-.price-tag {
-    display: inline-block;
-    padding: 4px 10px;
-    border-radius: 6px;
-    background: #f3f4f6;
-    font-weight: 600;
-    margin: 2px;
-}
-.price-tag.cheapest {
-    background: #dcfce7;
-    color: #166534;
-    font-weight: 800;
-}
-.price-tag.expensive {
-    background: #fee2e2;
-    color: #991b1b;
-}
-
-/* ─── עלייה נוחה במובייל ─── */
-@media (max-width: 640px) {
-    h1 { font-size: 1.5rem !important; }
-    .stButton>button { width: 100%; padding: 1rem; font-size: 18px; }
-    [data-testid="stMetricValue"] { font-size: 1.5rem !important; }
-}
-
-/* ─── הידור scrollbar ─── */
-::-webkit-scrollbar { width: 8px; }
-::-webkit-scrollbar-thumb { background: #d32f2f; border-radius: 8px; }
-</style>
-
-<link href="https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700;800&family=Rubik:wght@400;600;700&display=swap" rel="stylesheet">
-""", unsafe_allow_html=True)
+def cname(c):
+    return CHAINS_HE.get(c, c)
 
 
-# ─── פונקציית טעינת סטטוס בסיס ────────────────────
+# ═══════════════════════════════════════════════════════
+# 3) נתונים ומצב
+# ═══════════════════════════════════════════════════════
 @st.cache_data(ttl=300)
-def get_db_info():
-    if not DB_PATH.exists():
+def get_db_info(_path_str):
+    if not Path(_path_str).exists():
         return None
-    conn = sqlite3.connect(DB_PATH)
-    info = conn.execute("""
-        SELECT chain, COUNT(*), MAX(updated_at)
-        FROM prices GROUP BY chain
-    """).fetchall()
+    conn = sqlite3.connect(_path_str)
+    info = conn.execute("SELECT chain, COUNT(*), MAX(updated_at) FROM prices GROUP BY chain ORDER BY COUNT(*) DESC").fetchall()
     conn.close()
     return info
 
 
-def _db_misc():
-    """מספר מוצרים ייחודיים + תאריך העדכון האחרון - לתצוגת הכותרת."""
+@st.cache_data(ttl=300)
+def _db_misc(_path_str):
     try:
-        _c = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        _c = sqlite3.connect(f"file:{_path_str}?mode=ro", uri=True)
         _b = _c.execute("SELECT COUNT(DISTINCT barcode) FROM prices").fetchone()[0]
         _u = _c.execute("SELECT MAX(updated_at) FROM prices").fetchone()[0]
         _c.close()
@@ -314,158 +144,20 @@ def _db_misc():
         return 0, ""
 
 
-# ─── שמירת היסטוריה מקומית (בדפדפן) ──────────────
-def load_history():
-    if "history" not in st.session_state:
-        st.session_state.history = []
-    return st.session_state.history
+info = get_db_info(str(DB_PATH))
+_uniq, _last_upd = _db_misc(str(DB_PATH))
+total_rows = sum(cnt for _, cnt, _ in info) if info else 0
+_found_keys = [c for c, _n, _u in (info or [])]
+_missing_names = [cname(c) for c in ONLINE_CHAINS if c not in _found_keys]
 
-
-def save_to_history(items, result):
-    hist = load_history()
-    valid = {c: result["totals"][c]["total"] for c in result["chains"]
-             if result["totals"][c]["hits"] > 0}
-    if not valid:
-        return
-    cheapest = min(valid.items(), key=lambda x: x[1])
-    max_total = max(valid.values())
-    hist.insert(0, {
-        "date": datetime.now().strftime("%d/%m %H:%M"),
-        "items": items,
-        "cheapest_chain": cheapest[0],
-        "cheapest_total": cheapest[1],
-        "savings": max_total - cheapest[1],
-    })
-    st.session_state.history = hist[:20]  # 20 אחרונים
-
-
-# ─── כותרת עליונה ─────────────────────────────
-info = get_db_info()
-_uniq, _last_upd = _db_misc()
-total = sum(cnt for _, cnt, _ in info) if info else 0
-
-st.markdown("""
-<div class="sm-hero">
-  <h1>🛒 סל משווה</h1>
-  <p>מקלידים את הסל — ורואים מיד באיזו רשת קונים בזול. נתונים חיים מאתרי שקיפות המחירים של הרשתות.</p>
-  <div class="sm-steps">
-    <span class="sm-step">1️⃣ בוחרים רשתות</span>
-    <span class="sm-step">2️⃣ כותבים את הסל</span>
-    <span class="sm-step">3️⃣ רואים מי הזול</span>
-  </div>
-</div>
-""", unsafe_allow_html=True)
-
-if info:
-    _c1, _c2, _c3, _c4 = st.columns(4)
-    _c1.metric("מחירים במאגר", f"{total:,}")
-    _c2.metric("מוצרים ייחודיים", f"{_uniq:,}")
-    _c3.metric("רשתות", f"{len(info)}")
-    _c4.metric("עדכון אחרון", (_last_upd or "—")[:10])
-
-# ─── בדיקה שיש נתונים ─────────────────────────
-if not info:
-    st.error("⚠️ אין נתונים ב-DB.")
-    st.code("python scraper.py --chains shufersal --limit 5", language="bash")
-    st.stop()
-
-# ─── תצוגת מקורות ─────────────────────────────
-with st.expander("📊 מקורות הנתונים"):
-    cols = st.columns(len(info))
-    for col, (chain, cnt, upd) in zip(cols, info):
-        with col:
-            st.metric(
-                CHAINS_HE.get(chain, chain),
-                f"{cnt:,}",
-                f"עודכן {upd[:10] if upd else '—'}",
-            )
-
-st.markdown("---")
-
-# ─── טאבים ─────────────────────────────
-# ─── בדיקה גלויה: אילו רשתות נטענו, מאיזה קובץ ובאיזו גרסת קוד ───
-import datetime as _dt
-import pandas as pd
-
-ALL_CHAINS = ["shufersal", "rami-levy", "yohananof", "osher-ad",
-              "tiv-taam", "keshet", "freshmarket", "paz",
-              "carrefour", "hazi-hinam"]
-
-
-def _chain_rows(_path):
-    try:
-        _con = sqlite3.connect(str(_path))
-        _rows = _con.execute(
-            "SELECT chain, COUNT(*) FROM prices GROUP BY chain ORDER BY COUNT(*) DESC"
-        ).fetchall()
-        _con.close()
-        return _rows
-    except Exception:
-        return []
-
-
-_chain_rows_db = _chain_rows(DB_PATH)
-_found_keys = [c for c, _n in _chain_rows_db]
-_found_names = [CHAINS_HE.get(c, c) for c in _found_keys]
-_missing_names = [CHAINS_HE.get(c, c) for c in ONLINE_CHAINS if c not in _found_keys]
-
-st.caption(
-    f"📁 קובץ נתונים שנטען: `{DB_PATH.name}` · רשתות בקובץ: "
-    f"**{len(_found_keys)} מתוך {len(ONLINE_CHAINS)}** · גרסת קוד: `{APP_VERSION}`"
-)
-if REMOTE_USED:
-    st.caption("🔄 הנתונים נמשכו מהעדכון האוטומטי היומי (ענף data)")
-
-if _found_names:
-    st.markdown("**הרשתות שנמצאו במסד:**")
-    st.markdown("  ".join(f"`{n}`" for n in _found_names))
-
-if _missing_names:
-    st.markdown("**⚠️ רשתות שלא נמצאו במסד:** " + "  ".join(f"`{n}`" for n in _missing_names))
-
-if len(_found_keys) < len(ONLINE_CHAINS):
-    st.warning(
-        f"⚠️ **נטענו רק {len(_found_keys)} מתוך {len(ONLINE_CHAINS)} הרשתות שמוכרות אונליין.** "
-        + (f"חסרות: {', '.join(_missing_names)}. " if _missing_names else "")
-        + "סימן שהאפליקציה קוראת קובץ נתונים ישן או חלקי — "
-        "פִּתחי את 'למה נבחר הקובץ הזה?' למטה כדי לראות את כל הקבצים שנמצאו בריפו."
-    )
-else:
-    st.success(f"✅ כל {len(ONLINE_CHAINS)} הרשתות האונליין נטענו בהצלחה.")
-
-with st.expander("🔎 למה נבחר הקובץ הזה? (כל קבצי הנתונים שנמצאו)", expanded=len(_found_keys) < len(ONLINE_CHAINS)):
-    st.dataframe(
-        pd.DataFrame([
-            {
-                "קובץ": _pth.name,
-                "רשתות": _ch,
-                "שורות": _rw,
-                "גודל (MB)": round(_sz / 1048576, 1),
-                "עודכן": _dt.datetime.fromtimestamp(_pth.stat().st_mtime).strftime("%d/%m %H:%M"),
-                "נבחר": "✅" if _pth == DB_PATH else "",
-            }
-            for _pth, (_ch, _rw, _sz) in DB_SCAN
-        ]),
-        use_container_width=True, hide_index=True,
-    )
-    st.caption(
-        "סדר העדיפויות: 1) הכי הרבה רשתות · 2) הכי הרבה שורות · "
-        "3) קובץ בשם prices.db · 4) הגודל. "
-        "כלומר קובץ עם יותר רשתות תמיד ינצח את הקובץ הישן עם הרשת הבודדת, "
-        "לא משנה איך הם נקראים."
-    )
-
-# ─── השוואה: הקובץ שבסביבה מול הקובץ בגיטהאב ───
-from datetime import datetime as _dtime, timedelta as _tdelta, timezone as _tz
-
+# ─── השוואה מול גיטהאב — האם צריך Reboot ───
 GITHUB_REPO = "tsippiz-star/sal-mashve"
 GITHUB_BRANCH = "main"
-_IL = _tz(_tdelta(hours=3))  # שעון ישראל
+_IL = _tz(_tdelta(hours=3))
 
 
 @st.cache_data(ttl=600, show_spinner=False)
 def _github_db_info():
-    """{שם קובץ: (תאריך הקומיט האחרון, גודל)} עבור קובצי המסד בגיטהאב."""
     import json as _json
     import urllib.parse as _up
     import urllib.request as _ur
@@ -474,18 +166,15 @@ def _github_db_info():
         _req = _ur.Request(_url, headers={"User-Agent": "sal-mashve-app"})
         with _ur.urlopen(_req, timeout=8) as _r:
             return _json.load(_r)
-
     try:
         _tree = _get(f"https://api.github.com/repos/{GITHUB_REPO}/git/trees/{GITHUB_BRANCH}?recursive=1")
     except Exception:
         return {}
-
     _out = {}
     for _e in _tree.get("tree", []):
         _n = _e.get("path", "")
         if _e.get("type") == "blob" and _n.startswith("prices") and _n.endswith(".db"):
             _out[_n] = {"size": _e.get("size", 0), "commit": None}
-
     for _n in list(_out)[:6]:
         try:
             _c = _get(f"https://api.github.com/repos/{GITHUB_REPO}/commits?path={_up.quote(_n)}&per_page=1")
@@ -498,760 +187,848 @@ def _github_db_info():
 
 _gh_info = _github_db_info()
 _env_files = {_p.name: _p for _p, _ in DB_SCAN}
-_gh_names = set(_gh_info)
-_all_names = sorted(_env_files) if not _gh_info else sorted(set(_env_files) | _gh_names)
-
+_all_names = sorted(_env_files) if not _gh_info else sorted(set(_env_files) | set(_gh_info))
 _rows_cmp, _need_reboot = [], []
 for _name in _all_names:
     _ep = _env_files.get(_name)
     _gp = _gh_info.get(_name) or {}
-    _env_dt = _dtime.fromtimestamp(_ep.stat().st_mtime, _tz.utc) if _ep else None
-    _env_txt = _env_dt.astimezone(_IL).strftime("%d/%m/%Y %H:%M") if _env_dt else "❌ לא קיים"
-    _gh_size = _gp.get("size")
-    _gh_iso = _gp.get("commit")
-    _gh_dt = _dtime.fromisoformat(_gh_iso.replace("Z", "+00:00")) if _gh_iso else None
-    _gh_txt = _gh_dt.astimezone(_IL).strftime("%d/%m/%Y %H:%M") if _gh_dt else "—"
-
-    if _gh_size is None:                                     # קובץ שלא נמצא בגיטהאב
+    _env_dt = datetime.fromtimestamp(_ep.stat().st_mtime, _tz.utc) if _ep else None
+    _gh_size, _gh_iso = _gp.get("size"), _gp.get("commit")
+    _gh_dt = datetime.fromisoformat(_gh_iso.replace("Z", "+00:00")) if _gh_iso else None
+    if _ep is not None and _ep == REMOTE_DB_PATH:
+        _state = "✅ עדכון יומי (ענף data)"
+    elif _gh_size is None:
         _state = "— לא נמצא בגיטהאב"
-    elif _ep is None:                                        # קיים בגיטהאב, חסר בסביבה
+    elif _ep is None:
         _state = "🔄 נדרש Reboot — הקובץ עוד לא הגיע לסביבה"
-        _need_reboot.append(f"`{_name}` חסר בסביבה")
-    elif _ep.stat().st_size != _gh_size:                     # גדלים שונים = תוכן שונה
-        _state = "🔄 נדרש Reboot — בסביבה גרסה שונה מזו שבגיטהאב"
-        _need_reboot.append(f"`{_name}` בגודל שונה")
+        _need_reboot.append(f"{_name} חסר בסביבה")
+    elif _ep.stat().st_size != _gh_size:
+        _state = "🔄 נדרש Reboot — גרסה שונה מזו שבגיטהאב"
+        _need_reboot.append(f"{_name} בגודל שונה")
     elif _gh_dt and _env_dt and _gh_dt > _env_dt + _tdelta(minutes=2):
         _state = "🔄 נדרש Reboot — בגיטהאב יש גרסה חדשה יותר"
-        _need_reboot.append(f"`{_name}` חדש יותר בגיטהאב")
+        _need_reboot.append(f"{_name} חדש יותר בגיטהאב")
     else:
         _state = "✅ מעודכן"
-
     _rows_cmp.append({
         "קובץ": _name,
-        "תאריך בסביבה": _env_txt,
-        "תאריך בגיטהאב": _gh_txt,
+        "תאריך בסביבה": _env_dt.astimezone(_IL).strftime("%d/%m/%Y %H:%M") if _env_dt else "❌ לא קיים",
+        "תאריך בגיטהאב": _gh_dt.astimezone(_IL).strftime("%d/%m/%Y %H:%M") if _gh_dt else "—",
         "גודל בסביבה (MB)": round(_ep.stat().st_size / 1048576, 1) if _ep else "❌",
         "גודל בגיטהאב (MB)": round(_gh_size / 1048576, 1) if _gh_size is not None else "—",
         "מצב": _state,
     })
 
-with st.expander("🕒 השוואה מול גיטהאב — האם צריך Reboot?", expanded=bool(_need_reboot)):
-    if not _gh_info:
-        st.info(
-            "לא הצלחתי לקרוא את גיטהאב כרגע (אין רשת או הגבלת קצב של ה-API). "
-            "אפשר לנסות שוב בעוד דקה, או פשוט ללחוץ Reboot."
-        )
-    else:
-        st.dataframe(pd.DataFrame(_rows_cmp), use_container_width=True, hide_index=True)
-        st.caption(
-            "אם תאריך הקומיט בגיטהאב חדש מהתאריך שבסביבה — או שהגדלים שונים — "
-            "הגרסה שהאפליקציה מריצה אינה המעודכנת, ונדרש Reboot."
-        )
+DATA_OK = bool(info) and not _missing_names and not _need_reboot
 
-if _gh_info and _need_reboot:
-    st.error(
-        "🔄 **נדרש Reboot:** " + " · ".join(_need_reboot)
-        + " — נכנסים לתפריט **⋯ → Reboot app**. "
-        "בלי זה האפליקציה תמשיך לעבוד עם הגרסה הישנה שבזיכרון שלה."
-    )
-elif _gh_info and _all_names:
-    st.success("✅ הקבצים שבסביבה תואמים את מה שבגיטהאב — אין צורך ב-Reboot.")
+# ─── session state ───
+ss = st.session_state
+ss.setdefault("items", [])
+ss.setdefault("history", [])
+ss.setdefault("uid", 0)
+ss.setdefault("seeded", False)
 
-# ─── כפתור: לאתר מחדש את קובץ המסד בלי Reboot ───
-_bcol1, _bcol2 = st.columns([1, 2])
-with _bcol1:
-    if st.button("🔄 לאתר מחדש את קובץ הנתונים", help="סורק שוב את כל קובצי prices*.db שבסביבת האפליקציה, מנקה את הזיכרון הפנימי ובוחר את הקובץ עם הכי הרבה רשתות"):
-        st.cache_data.clear()
-        st.cache_resource.clear()
-        st.rerun()
-with _bcol2:
-    st.caption(
-        f"סריקה אחרונה: **{_dt.datetime.now().strftime('%d/%m/%Y %H:%M:%S')}** · "
-        "הלחיצה סורקת מחדש את הקבצים שבסביבת האפליקציה, מנקה זיכרון פנימי וטוענת את הקובץ הטוב ביותר. "
-        "אם קובץ חדש עדיין לא הגיע לסביבה — הוא לא יימצא עד שהאפליקציה תתרענן מול גיטהאב."
-    )
+# ═══════════════════════════════════════════════════════
+# 4) לוגיקת הסל
+# ═══════════════════════════════════════════════════════
+_KG = r'(?:ק"?ג|קילו(?:גרם)?|קילוגרם|קג)'
 
-_ALL_CHAIN_KEYS = ["shufersal", "rami-levy", "yohananof", "osher-ad",
-                   "tiv-taam", "keshet", "freshmarket", "paz",
-                   "carrefour", "hazi-hinam"]
-_default_chains = [c for c in _ALL_CHAIN_KEYS if c in ONLINE_CHAINS]
 
-_selected_chains = st.multiselect(
-    "🛒 אילו רשתות ייכללו בהשוואה ובנתונים?",
-    options=_ALL_CHAIN_KEYS,
-    default=_default_chains,
-    format_func=lambda c: CHAINS_HE.get(c, c),
-    key="chains_selected",
-    help="ברירת המחדל היא רשתות שמוכרות גם אונליין. אפשר להוסיף או להסיר כל רשת — "
-         "הבחירה חלה על ההשוואה ועל לשונית כל הנתונים.",
-)
-st.caption(f"🛒 נבחרו {len(_selected_chains)} רשתות: "
-           + " · ".join(CHAINS_HE.get(c, c) for c in _selected_chains)
-           + ("" if len(_selected_chains) >= 2 else "  ⚠️ בחרי לפחות 2 רשתות"))
+def _qty_and_name(_line):
+    """כמות ושם מוצר. תומך גם במשקל: '2 קילו עגבניות' / 'עגבניות 1.5 ק"ג' / '500 גרם עגבניות'."""
+    _s = str(_line).strip()
+    _m = _re.match(rf"^\s*(\d+(?:[.,]\d+)?)\s*{_KG}\s+(.+)$", _s)
+    if _m:
+        return float(_m.group(1).replace(",", ".")), _m.group(2).strip(), True
+    _m = _re.match(rf"^(.+?)\s+(\d+(?:[.,]\d+)?)\s*{_KG}\s*$", _s)
+    if _m:
+        return float(_m.group(2).replace(",", ".")), _m.group(1).strip(), True
+    _m = _re.match(r"^\s*(\d+(?:[.,]\d+)?)\s*(?:גרם|גר'|גר)\s+(.+)$", _s)
+    if _m:
+        return float(_m.group(1).replace(",", ".")) / 1000.0, _m.group(2).strip(), True
+    _m = _re.match(r"^(.+?)\s+(\d+(?:[.,]\d+)?)\s*(?:גרם|גר'|גר)\s*$", _s)
+    if _m:
+        return float(_m.group(2).replace(",", ".")) / 1000.0, _m.group(1).strip(), True
+    _m1 = _re.match(r"^\s*(\d+(?:[.,]\d+)?)\s*[xX*×]?\s+(.+)$", _s)
+    if _m1:
+        return float(_m1.group(1).replace(",", ".")), _m1.group(2).strip(), False
+    _m2 = _re.match(r"^(.+?)\s*[xX*×]\s*(\d+(?:[.,]\d+)?)$", _s)
+    if _m2:
+        return float(_m2.group(2).replace(",", ".")), _m2.group(1).strip(), False
+    return 1.0, _s, False
 
-tab_new, tab_produce, tab_data, tab_history, tab_help = st.tabs(["🛒 השוואה", "🥕 ירקות ופירות", "🗂️ כל המחירים", "📊 ההיסטוריה שלי", "❓ איך זה עובד"])
 
-with tab_new:
-    st.markdown("### ✍️ מה יש בסל?")
+@st.cache_data(show_spinner=False, ttl=3600)
+def _match_cached(q, _db):
+    prod = match_item(q)
+    if prod:
+        return {"barcode": prod["barcode"], "name": prod["name"], "brand": prod.get("brand", "")}, []
+    return None, find_candidates(q, 4)
 
-    # דוגמאות מהירות
-    st.markdown("**דוגמאות מהירות:**")
-    ex_cols = st.columns(4)
-    examples = {
-        "🥛 סל בסיסי":  "חלב 3%\nלחם\nביצים\nגבינה צהובה\nעגבניות",
-        "🍿 חטיפים":     "במבה\nביסלי\nעוגיות\nגלידה\nשוקולד פרה",
-        "🥗 בישול":      "עוף\nאורז\nשמן\nבצל\nמלפפונים",
-        "🧴 ניקיון":     "אבקת כביסה\nנייר טואלט\nסבון כלים\nרביע",
-    }
-    for col, (name, content) in zip(ex_cols, examples.items()):
-        with col:
-            if st.button(name, key=f"ex_{name}", use_container_width=True):
-                st.session_state.shopping_list = content
 
-    # ─── הרשימה שלי: העלאת קובץ + הזנה ידנית ───
-    st.markdown("---")
-    st.markdown("### 📋 הרשימה שלי")
-    st.caption("כל משתמש רואה רק את הרשימה שלו — היא נשמרת בדפדפן של מי שהזין אותה ואינה משותפת עם אחרים.")
+@st.cache_data(show_spinner=False, ttl=3600)
+def _prices_for(barcode, _db):
+    """ממוצע ארצי לכל רשת (כמו price_by_barcode) + יחידת מידה."""
+    conn = sqlite3.connect(_db)
+    rows = conn.execute("SELECT chain, AVG(price) FROM prices WHERE barcode = ? AND price > 0 GROUP BY chain", (barcode,)).fetchall()
+    u = conn.execute("SELECT MAX(unit) FROM prices WHERE barcode = ?", (barcode,)).fetchone()
+    conn.close()
+    return {c: round(p, 2) for c, p in rows if p}, (u[0] if u and u[0] else "")
 
-    up_col, tpl_col, save_col = st.columns([2, 1, 1])
-    with up_col:
-        uploaded = st.file_uploader(
-            "העלאת רשימה מהמחשב (CSV / TXT / Excel)",
-            type=["csv", "txt", "xlsx", "xls"],
-            key="list_upload",
-            help="קובץ עם עמודה של שמות מוצרים, ואם יש גם עמודת כמות — היא תיקרא אוטומטית",
-        )
-    with tpl_col:
-        st.download_button(
-            "⬇️ תבנית רשימה",
-            "מוצר,כמות\nחלב 3%,2\nלחם אחיד,1\nביצים L,12\nקוטג',1\n".encode("utf-8-sig"),
-            file_name="תבנית_רשימת_קניות.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-    with save_col:
-        _cur = [x.strip() for x in str(st.session_state.get("shopping_list", "")).splitlines() if x.strip()]
-        st.download_button(
-            "⬇️ שמירת הרשימה שלי",
-            ("מוצר,כמות\n" + "\n".join(_cur) + "\n").encode("utf-8-sig"),
-            file_name="הרשימה_שלי.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
 
-    if uploaded is not None:
-        try:
-            _fname = uploaded.name.lower()
-            if _fname.endswith((".xlsx", ".xls")):
-                _df_up = pd.read_excel(uploaded)
-            else:
-                _raw = uploaded.getvalue().decode("utf-8-sig", errors="replace")
-                _lines_raw = [l for l in _raw.splitlines() if l.strip()]
-                if _lines_raw and "," in _lines_raw[0]:
-                    import io as _io
-                    _df_up = pd.read_csv(_io.StringIO(_raw))
-                else:
-                    _df_up = pd.DataFrame({"מוצר": [l.strip() for l in _lines_raw]})
+def _new_item(q, qty=1.0, kg=False, prod=None, cands=None):
+    ss.uid += 1
+    return {"uid": ss.uid, "q": q, "qty": qty, "kg": kg,
+            "barcode": prod["barcode"] if prod else None,
+            "name": prod["name"] if prod else "",
+            "status": "ok" if prod else ("unclear" if cands else "none"),
+            "cands": cands or []}
 
-            _cols = {str(c).strip().lower(): c for c in _df_up.columns}
-            _name_col = next((_cols[k] for k in ("מוצר", "פריט", "שם", "product", "name", "item") if k in _cols), _df_up.columns[0])
-            _qty_col = next((_cols[k] for k in ("כמות", "מס'", "quantity", "qty", "count") if k in _cols), None)
 
-            _parsed = []
-            for _, _r in _df_up.iterrows():
-                _nm = str(_r.get(_name_col, "") or "").strip()
-                if not _nm or _nm.lower() in ("nan", "none"):
-                    continue
-                _pref = ""
-                if _qty_col is not None:
-                    try:
-                        _q = float(_r.get(_qty_col))
-                        _pref = f"{int(_q) if _q == int(_q) else _q} "
-                    except Exception:
-                        _pref = ""
-                _parsed.append(f"{_pref}{_nm}".strip())
-
-            if _parsed:
-                _txt_new = "\n".join(_parsed)
-                st.session_state["shopping_list"] = _txt_new
-                st.session_state["input_area"] = _txt_new
-                st.success(f"✅ נטענו {len(_parsed)} פריטים מהקובץ `{uploaded.name}`")
-                st.rerun()
-            else:
-                st.warning("לא נמצאו פריטים בקובץ — ודאי שיש בו עמודה עם שמות מוצרים.")
-        except Exception as _e:
-            st.error(f"לא הצלחתי לקרוא את הקובץ: {_e}")
-
-    st.markdown("**או הזיני ידנית — שורה לכל מוצר (אפשר להוסיף שורות בטבלה):**")
-    _rows_init = pd.DataFrame([{"מוצר": "", "כמות": 1}] * 5)
-    tbl_out = None
-    try:
-        tbl_out = st.data_editor(
-            _rows_init, num_rows="dynamic", use_container_width=True, hide_index=True,
-            key="items_table",
-            column_config={
-                "מוצר": st.column_config.TextColumn("מוצר", width="large"),
-                "כמות": st.column_config.NumberColumn("כמות", min_value=0.0, step=1.0),
-            },
-        )
-    except TypeError:
-        tbl_out = st.data_editor(_rows_init, num_rows="dynamic", use_container_width=True,
-                                 hide_index=True, key="items_table")
-    st.caption("הפריטים שהוזנו בטבלה מתווספים אוטומטית להשוואה — אין צורך להעתיק אותם.")
-
-    default = st.session_state.get("shopping_list",
-                                     "חלב 3%\nקוטג'\nביצים L\nבמבה\nלחם אחיד\nיוגורט\nגבינה צהובה")
-
-    txt = st.text_area(
-        "רשימת קניות (פריט בכל שורה):",
-        default,
-        height=200,
-        key="input_area",
-    )
-
-    compare_btn = st.button("⚖️ השווי את הסל", use_container_width=True, type="primary")
-
-    if compare_btn:
-        # ─── איסוף הפריטים יחד עם הכמויות (מהטקסט וגם מהטבלה) ───
-        import re as _re
-
-        def _qty_and_name(_line):
-            """כמות ושם מוצר. תומך גם במשקל: '2 קילו עגבניות' / 'עגבניות 1.5 ק"ג' / '500 גרם עגבניות'."""
-            _s = str(_line).strip()
-            _KG = r'(?:ק"?ג|קילו(?:גרם)?|קילוגרם|קג)'
-            _m = _re.match(rf"^\s*(\d+(?:[.,]\d+)?)\s*{_KG}\s+(.+)$", _s)
-            if _m:
-                return float(_m.group(1).replace(",", ".")), _m.group(2).strip(), True
-            _m = _re.match(rf"^(.+?)\s+(\d+(?:[.,]\d+)?)\s*{_KG}\s*$", _s)
-            if _m:
-                return float(_m.group(2).replace(",", ".")), _m.group(1).strip(), True
-            _m = _re.match(r"^\s*(\d+(?:[.,]\d+)?)\s*(?:גרם|גר'|גר)\s+(.+)$", _s)
-            if _m:
-                return float(_m.group(1).replace(",", ".")) / 1000.0, _m.group(2).strip(), True
-            _m = _re.match(r"^(.+?)\s+(\d+(?:[.,]\d+)?)\s*(?:גרם|גר')\s*$", _s)
-            if _m:
-                return float(_m.group(2).replace(",", ".")) / 1000.0, _m.group(1).strip(), True
-            _m1 = _re.match(r"^\s*(\d+(?:[.,]\d+)?)\s*[xX*×]?\s+(.+)$", _s)
-            if _m1:
-                return float(_m1.group(1).replace(",", ".")), _m1.group(2).strip(), False
-            _m2 = _re.match(r"^(.+?)\s*[xX*×]\s*(\d+(?:[.,]\d+)?)$", _s)
-            if _m2:
-                return float(_m2.group(2).replace(",", ".")), _m2.group(1).strip(), False
-            return 1.0, _s, False
-
-        _pairs, _weight_items = [], []
-        for _line in txt.splitlines():
-            if _line.strip():
-                _q, _n2, _byw = _qty_and_name(_line)
-                _pairs.append((_q, _n2))
-                if _byw:
-                    _weight_items.append(_n2)
-
-        try:
-            _tbl = tbl_out if isinstance(tbl_out, pd.DataFrame) else pd.DataFrame(tbl_out)
-            for _, _r in _tbl.iterrows():
-                _nm2 = str(_r.get("מוצר", "") or "").strip()
-                if not _nm2 or _nm2.lower() in ("nan", "none"):
-                    continue
-                try:
-                    _q2 = float(_r.get("כמות", 1) or 1)
-                except Exception:
-                    _q2 = 1.0
-                _pairs.append((_q2 if _q2 > 0 else 1.0, _nm2))
-        except Exception:
-            pass
-
-        # איחוד לפי שם מוצר — כמויות של אותו מוצר מחוברות זו לזו
-        qty_of, items = {}, []
-        for _q, _n in _pairs:
-            _key = _n.replace(" ", "").lower()
-            if not _key:
-                continue
-            if _key in qty_of:
-                qty_of[_key] = qty_of[_key] + _q
-            else:
-                qty_of[_key] = _q
-                items.append(_n)
-
-        if not items:
-            st.warning("הזיני לפחות פריט אחד")
+def add_lines(lines):
+    n = 0
+    for line in lines:
+        if not str(line).strip():
+            continue
+        qty, q, kg = _qty_and_name(line)
+        prod, cands = _match_cached(q, str(DB_PATH))
+        ex = next((x for x in ss["items"] if prod and x["barcode"] == prod["barcode"]), None) or \
+            next((x for x in ss["items"] if x["q"].replace(" ", "") == q.replace(" ", "")), None)
+        if ex:
+            ex["qty"] = round(ex["qty"] + qty, 3)
         else:
-            with st.spinner(f"🔎 מחפש {len(items)} פריטים ברשתות..."):
-                result = compare(items)
-
-            # סינון לרשתות עם מכירה אונליין (לפי המתג שלמעלה)
-            result = _filter_chains(result, _selected_chains)
-            st.caption("🛒 הושוו " + " · ".join(CHAINS_HE.get(c, c) for c in result["chains"]))
-            if _weight_items:
-                st.caption("⚖️ פריטים לפי משקל: " + " · ".join(_weight_items)
-                           + " — המחיר מוכפל במספר הקילוגרמים שהזנת.")
-                _not_kg = [m["query"] for m in result["matched"]
-                           if m["query"] in _weight_items
-                           and not any(k in str(m["product"].get("unit", ""))
-                                       for k in ("גרם", "קילו", 'ק"ג', "קג"))]
-                if _not_kg:
-                    st.warning("⚠️ אלה זוהו כמוצר לפי יחידה/אריזה ולא לפי משקל: " + ", ".join(_not_kg)
-                               + " — להשוואה לפי קילו עברי ללשונית 🥕 ירקות ופירות.")
-
-            # ─── הסיכום משוקלל לפי הכמות (2 חלב = פעמיים המחיר) ───
-            def _qty_for(_name):
-                _k = str(_name).replace(" ", "").lower()
-                if _k in qty_of:
-                    return qty_of[_k]
-                return qty_of.get(str(_name).strip().replace(" ", "").lower(), 1.0)
-
-            _weighted = {}
-            for _c in result["chains"]:
-                _tot, _hits, _miss = 0.0, 0, 0
-                for _m in result["matched"]:
-                    _pr = _m["prices"].get(_c)
-                    if _pr is None:
-                        _miss += 1
-                    else:
-                        _hits += 1
-                        _tot += _pr * _qty_for(_m["query"])
-                _weighted[_c] = {"total": round(_tot, 2), "hits": _hits, "missing": _miss}
-            result["totals"] = _weighted
-
-            save_to_history(items, result)
-
-            # ─── פריטים לא ברורים ─────────────
-            if result["unclear"]:
-                st.warning(f"⚠️ **{len(result['unclear'])} פריטים לא זוהו**")
-                for u in result["unclear"]:
-                    with st.expander(f"❓ {u['query']} – מועמדים אפשריים"):
-                        if u["candidates"]:
-                            for c in u["candidates"]:
-                                st.write(f"- **{c['name']}** ({c['brand']}) — ניקוד {c['score']:.0f}")
-                            st.info("💡 שני את השם ב\"רשימת הקניות\" והשווי שוב")
-                        else:
-                            st.write("אין מועמדים במאגר.")
-
-            if not result["matched"]:
-                st.error("😞 לא זוהה אף פריט. נסי שמות ספציפיים יותר.")
-                st.stop()
-
-            st.markdown(f"### 📊 תוצאות – {len(result['matched'])} פריטים זוהו")
-
-            # ─── טבלת תוצאות בפורמט כרטיסים ───────
-            chains = result["chains"]
-            for m in result["matched"]:
-                prod = m["product"]
-                valid = {c: p for c, p in m["prices"].items() if p is not None}
-                if not valid:
-                    continue
-                min_price = min(valid.values())
-                _q_item = _qty_for(m["query"])
-
-                tags_html = ""
-                for c in chains:
-                    p = m["prices"].get(c)
-                    if p is None:
-                        continue
-                    if p == min_price:
-                        tags_html += (f'<span class="price-tag cheapest">'
-                                       f'🏆 {CHAINS_HE.get(c,c)} · {p} ₪</span>')
-                    else:
-                        diff_pct = (p - min_price) / min_price * 100
-                        tags_html += (f'<span class="price-tag">'
-                                       f'{CHAINS_HE.get(c,c)} · {p} ₪ '
-                                       f'<small>(+{diff_pct:.0f}%)</small></span>')
-
-                st.markdown(f"""
-                <div class="result-card">
-                    <div style="font-weight:700;font-size:1.05rem;color:#1f2937;">
-                        {m['query']}{(' × ' + format(_q_item, 'g')) if _q_item > 1 else ''}
-                    </div>
-                    <div style="color:#6b7280;font-size:0.85rem;margin:4px 0 8px;">
-                        {prod['name']}
-                    </div>
-                    <div>{tags_html}</div>
-                    {('<div style="margin-top:6px;font-size:0.85rem;color:#374151;">סה&quot;כ לפריט זה ברשת הזולה: ' + format(min_price * _q_item, '.2f') + ' ₪</div>') if _q_item > 1 else ''}
-                </div>
-                """, unsafe_allow_html=True)
-
-            # ─── סיכום סלים בכרטיסים ──────────
-            st.markdown("---")
-            st.markdown("### 💰 סיכום סלים")
-            _qty_items = [i for i in items if _qty_for(i) > 1]
-            st.caption("הסיכום משוקלל לפי הכמויות שהזנת — "
-                       + (", ".join(f"{i} × {format(_qty_for(i), 'g')}" for i in _qty_items)
-                          if _qty_items else "כל פריט נספר ביחידה אחת."))
-            tot = result["totals"]
-            valid_totals = {c: tot[c] for c in chains if tot[c]["hits"] > 0}
-
-            if valid_totals:
-                winner = min(valid_totals.items(), key=lambda x: x[1]["total"])
-                max_total = max(t["total"] for t in valid_totals.values())
-
-                sum_cols = st.columns(len(valid_totals))
-                for i, (c, t) in enumerate(sorted(valid_totals.items(),
-                                                    key=lambda x: x[1]["total"])):
-                    with sum_cols[i]:
-                        is_winner = (c == winner[0])
-                        emoji = "🏆" if is_winner else "🏪"
-                        delta = None if is_winner else f"+{t['total']-winner[1]['total']:.2f} ₪"
-                        st.metric(
-                            f"{emoji} {CHAINS_HE.get(c, c)}",
-                            f"{t['total']} ₪",
-                            delta=delta,
-                            delta_color="inverse",
-                        )
-                        st.caption(f"{t['hits']}/{t['hits']+t['missing']} פריטים נמצאו")
-
-                savings = max_total - winner[1]["total"]
-                if savings > 0.5:
-                    st.success(
-                        f"### 💸 חיסכון של **{savings:.2f} ₪** ב-{CHAINS_HE.get(winner[0], winner[0])} "
-                        f"על פני הרשת היקרה!"
-                    )
+            ss["items"].append(_new_item(q, qty, kg, prod, cands))
+        n += 1
+    return n
 
 
-                # ─── ⚖️ הוגנות ההשוואה: מי לא כללה איזה פריט ───
-                st.markdown("---")
-                st.markdown("### ⚖️ הוגנות ההשוואה — מי לא כללה איזה פריט")
-                st.caption("רשת שלא מוכרת פריט מהסל שלך מקבלת יתרון לא הוגן, כי הפריט פשוט לא נספר לה.")
+def _toast(msg, icon="✅"):
+    try:
+        st.toast(msg, icon=icon)
+    except Exception:
+        pass
 
-                _eligible = [c for c in chains if result["totals"][c]["hits"] > 0]
-                _missing_by_chain = {}
-                for _c in _eligible:
-                    _its = []
-                    for _m in result["matched"]:
-                        if _m["prices"].get(_c) is None:
-                            _q = _qty_for(_m["query"])
-                            _its.append(str(_m["query"]) + (f" × {format(_q, 'g')}" if _q > 1 else ""))
-                    if _its:
-                        _missing_by_chain[_c] = _its
 
-                if _missing_by_chain:
-                    for _c, _its in sorted(_missing_by_chain.items(), key=lambda x: (-len(x[1]), x[0])):
-                        st.warning(
-                            f"**{CHAINS_HE.get(_c, _c)}** לא כללה {len(_its)} פריטים מהסל: " + " · ".join(_its)
-                        )
-                    if winner[0] in _missing_by_chain:
-                        st.error(
-                            f"⚠️ שימי לב: הרשת הזולה הכוללת — **{CHAINS_HE.get(winner[0], winner[0])}** — "
-                            f"לא כללה {len(_missing_by_chain[winner[0]])} פריטים מהסל. "
-                            "הסיכום שלה אינו הוגן מול רשתות שכללו את הסל במלואו."
-                        )
-                else:
-                    st.success("✅ כל הרשתות כללו את כל פריטי הסל — ההשוואה הוגנת לחלוטין.")
+# ─── השלמה אוטומטית ───
+try:
+    from streamlit_searchbox import st_searchbox
+    HAS_SEARCHBOX = True
+except Exception:   # אם הרכיב לא מותקן — חוזרים לשדה הרגיל, הכול ממשיך לעבוד
+    HAS_SEARCHBOX = False
 
-                # השוואה הוגנת: רק הפריטים שקיימים בכל הרשתות
-                _common = [m for m in result["matched"]
-                           if _eligible and all(m["prices"].get(c) is not None for c in _eligible)]
-                if _eligible and _common and len(_common) < len(result["matched"]):
-                    st.markdown(
-                        f"**השוואה הוגנת — רק {len(_common)} מתוך {len(result['matched'])} הפריטים "
-                        f"שקיימים בכל {len(_eligible)} הרשתות:**"
-                    )
-                    _fair = {_c: round(sum(m["prices"][_c] * _qty_for(m["query"]) for m in _common), 2)
-                             for _c in _eligible}
-                    _fair_sorted = sorted(_fair.items(), key=lambda x: x[1])
-                    st.dataframe(
-                        pd.DataFrame([
-                            {"רשת": CHAINS_HE.get(_c, _c),
-                             'סה"כ הוגן (₪)': _t,
-                             "פער מהזולה (₪)": round(_t - _fair_sorted[0][1], 2)}
-                            for _c, _t in _fair_sorted
-                        ]),
-                        use_container_width=True, hide_index=True,
-                    )
-                    st.success(
-                        f"🏆 בהשוואה הוגנת הזולה היא **{CHAINS_HE.get(_fair_sorted[0][0], _fair_sorted[0][0])}** "
-                        f"— {_fair_sorted[0][1]} ₪ לפריטים המשותפים."
-                    )
-                elif _eligible and not _common:
-                    st.info("אין אפילו פריט אחד שכל הרשתות כללו — לכן אי אפשר להציג השוואה הוגנת מלאה.")
-with tab_history:
-    st.markdown("### 📊 היסטוריית ההשוואות שלך")
-    hist = load_history()
-    if not hist:
-        st.info("עדיין לא ביצעת השוואות. חזרי לטאב הראשון והתחילי!")
+_QUOTES_RE = "[" + _re.escape(chr(34) + "'׳״") + "]"
+_KG_LBL = " ק״ג"
+
+SEARCHBOX_STYLE = {
+    "wrapper": {"direction": "rtl", "fontFamily": "Heebo, Rubik, Arial, sans-serif"},
+    "clear": {"icon": "cross", "clearable": "always", "width": 18, "height": 18, "stroke": "#85938C"},
+    "dropdown": {"rotate": True, "width": 22, "height": 22, "fill": "#85938C"},
+    "searchbox": {
+        "control": {"direction": "rtl", "borderRadius": 16, "minHeight": 52, "fontSize": 16.5,
+                    "backgroundColor": "#F5FAF7", "borderColor": "#DCE3DD"},
+        "placeholder": {"color": "#85938C"},
+        "input": {"direction": "rtl"},
+        "menuList": {"direction": "rtl", "fontSize": 15, "maxHeight": 330},
+        "option": {"color": "#17231E", "backgroundColor": "#FFFFFF", "highlightColor": "#E7F3EC"},
+        "optionEmpty": "hidden",
+    },
+}
+
+
+@st.cache_resource(show_spinner=False, ttl=3600)
+def _catalog(_db):
+    """קטלוג להשלמה: שם, מותג, מספר רשתות, המחיר הזול והרשת הזולה. נטען פעם אחת לזיכרון."""
+    conn = sqlite3.connect(_db)
+    df = pd.read_sql_query(
+        "SELECT barcode, chain, MAX(name) AS name, MAX(brand) AS brand, AVG(price) AS price "
+        "FROM prices WHERE barcode != '' AND name != '' AND price > 0 GROUP BY barcode, chain", conn)
+    conn.close()
+    if df.empty:
+        return df
+    df = df.sort_values("price")
+    g = df.groupby("barcode", sort=False)
+    cat = pd.DataFrame({
+        "name": g["name"].first(), "brand": g["brand"].first(),
+        "n": g["chain"].nunique(), "min": g["price"].first().round(2), "best": g["chain"].first(),
+    }).reset_index()
+    cat["key"] = (cat["name"].fillna("") + " " + cat["brand"].fillna("")).str.replace(_QUOTES_RE, "", regex=True).str.lower()
+    return cat.sort_values("n", ascending=False).reset_index(drop=True)
+
+
+def search_products(term):
+    """לרכיב ההשלמה: [(תווית, ערך)]. השורה הראשונה = הוספת הטקסט בדיוק כפי שנכתב."""
+    term = str(term or "").strip()
+    if not term:
+        return []
+    qty, q, kg = _qty_and_name(term)
+    out = [("➕ הוספת ״" + term + "״", {"raw": term})]
+    toks = [t for t in _re.sub(_QUOTES_RE, "", q.lower()).split() if t]
+    cat = _catalog(str(DB_PATH))
+    if not toks or cat is None or cat.empty:
+        return out
+    m = cat["key"].str.contains(toks[0], regex=False)
+    for t in toks[1:]:
+        m &= cat["key"].str.contains(t, regex=False)
+    qlbl = (format(qty, "g") + (_KG_LBL if kg else "") + " × ") if qty != 1 else ""
+    for _, r in cat[m].head(8).iterrows():
+        br = str(r["brand"] or "")
+        brand = (" · " + br) if br and br.lower() not in ("לא ידוע", "none", "unknown", "nan") else ""
+        lbl = f"{qlbl}{r['name']}{brand}  —  מ-{r['min']:.2f} ₪ ב{cname(r['best'])} · {r['n']} רשתות"
+        out.append((lbl, {"barcode": r["barcode"], "name": r["name"], "qty": qty, "kg": kg}))
+    return out
+
+
+def cb_pick_suggestion(val):
+    if not val:
+        return
+    if "raw" in val:
+        add_lines([s for s in _re.split(r"\n|,(?=\s*\D)", val["raw"]) if s.strip()])
+        return
+    ex = next((x for x in ss["items"] if x["barcode"] == val["barcode"]), None)
+    if ex:
+        ex["qty"] = round(ex["qty"] + val["qty"], 3)
     else:
-        total_savings = sum(h["savings"] for h in hist)
-        st.metric("💰 חיסכון מצטבר", f"{total_savings:.2f} ₪", f"ב-{len(hist)} השוואות")
-        st.markdown("---")
-        for i, h in enumerate(hist):
-            with st.expander(f"🛒 {h['date']} · {len(h['items'])} פריטים · "
-                              f"חיסכון {h['savings']:.2f} ₪"):
-                st.write(f"**הרשת הזולה:** {CHAINS_HE.get(h['cheapest_chain'], h['cheapest_chain'])} — **{h['cheapest_total']:.2f} ₪**")
-                st.write("**פריטים:**")
-                st.write(", ".join(h['items']))
+        nm = str(val["name"])
+        ss["items"].append(_new_item(nm if len(nm) <= 40 else nm[:39] + "…", val["qty"], val["kg"],
+                                     {"barcode": val["barcode"], "name": nm}))
 
 
-with tab_help:
-    st.markdown("""
-    ### ❓ שאלות נפוצות
-
-    **איך זה עובד?**
-    האתר טוען קבצי "שקיפות מחירים" רשמיים שכל רשת מחויבת לפרסם על פי חוק (2014).
-    לכל פריט ברשימה שלך אנחנו מחפשים את המוצר במאגר של כל רשת, ומציגים את המחיר.
-
-    **כמה זה עולה?**
-    האתר חינמי לגמרי, לתמיד. הנתונים ציבוריים ומקורם ברשתות עצמן.
-
-    **מה זה "ממוצע ארצי"?**
-    לכל רשת יש עשרות סניפים עם הבדלי מחירים קלים. אנחנו מציגים ממוצע של כל הסניפים.
-
-    **פריט לא זוהה?**
-    כתבי שם מפורש יותר: במקום "חלב" → "חלב תנובה 3% קרטון".
-
-    **פרטיות:**
-    ההיסטוריה שלך נשמרת רק בדפדפן שלך. אנחנו לא שומרים שום מידע אישי.
-
-    ---
-    ### 🛠️ פותח על ידי
-    פרויקט קוד פתוח. בעיה? רעיון? פנו לצוות.
-    """)
-
-# ─── פוטר קטן ──────────────────────────
-st.markdown("---")
-st.markdown(
-    "<div style='text-align:center;color:#9ca3af;font-size:0.85rem;padding:1rem;'>"
-    "🛒 סל משווה · נתונים מקבצי שקיפות מחירים · בנוי בישראל 🇮🇱"
-    "</div>",
-    unsafe_allow_html=True,
-)
+# ─── callbacks ───
+def cb_add():
+    txt = ss.get("adder_text", "")
+    lines = [s for s in _re.split(r"\n|,(?=\s*\D)", txt) if s.strip()]
+    if add_lines(lines):
+        ss["adder_text"] = ""
 
 
-# ─── לשונית: כל הנתונים ─────────────────────────
-with tab_data:
-    st.markdown("### 🗂️ כל המחירים במאגר")
-    st.caption("כל הנתונים שנאספו מהרשתות — חיפוש לפי שם מוצר או ברקוד, והורדה לאקסל.")
+def cb_qty(uid, d):
+    for it in ss["items"]:
+        if it["uid"] == uid:
+            step = 0.5 if it["kg"] else 1.0
+            it["qty"] = max(step, round(it["qty"] + d * step, 3))
 
-    CHAIN_KEYS = ["shufersal", "rami-levy", "yohananof", "osher-ad",
-                  "tiv-taam", "keshet", "freshmarket", "paz",
-                  "carrefour", "hazi-hinam"]
-    CHAIN_KEYS = [c for c in CHAIN_KEYS if c in _selected_chains]
-    CHAIN_COLS = [CHAINS_HE.get(c, c) for c in CHAIN_KEYS]
 
-    c1, c2, c3 = st.columns([2, 1, 1])
-    q = c1.text_input("חיפוש (שם מוצר או ברקוד)", "", key="data_q")
-    only_shared = c2.checkbox("רק מוצרים ביותר מרשת אחת", value=True, key="data_shared")
-    rows_limit = c3.selectbox("כמה שורות להציג", [100, 200, 500, 1000, 5000], index=1, key="data_limit")
+def cb_remove(uid):
+    ss["items"] = [x for x in ss["items"] if x["uid"] != uid]
+
+
+def cb_pick(uid, cand):
+    for it in ss["items"]:
+        if it["uid"] == uid:
+            it.update(barcode=cand["barcode"], name=cand["name"], status="ok", cands=[])
+
+
+def cb_clear():
+    ss["items"] = []
+
+
+def cb_quick(lines, title):
+    ss["items"] = []
+    add_lines(lines)
+    _toast(f"נטען {title} · {len(lines)} מוצרים")
+
+
+def cb_paste():
+    add_lines(str(ss.get("paste_text", "")).splitlines())
+    ss["paste_text"] = ""
+    _toast("הרשימה נוספה לסל")
+
+
+def cb_add_barcode(barcode, name):
+    if any(x["barcode"] == barcode for x in ss["items"]):
+        _toast("המוצר כבר בסל", "ℹ️")
+        return
+    ss["items"].append(_new_item(name[:40], 1.0, False, {"barcode": barcode, "name": name}))
+    _toast(f"{name[:30]} נוסף לסל")
+
+
+def cb_nav_guard():
+    if ss.get("nav") is None:
+        ss["nav"] = ss.get("_last_nav", TABS[0])
+
+
+def cb_reuse(idx):
+    h = ss["history"][idx]
+    ss["items"] = [dict(x, uid=i + 1000 * (idx + 1) + ss.uid) for i, x in enumerate(h["list"])]
+    ss.uid += len(h["list"]) + 1000
+    ss["nav"] = TABS[0]
+    _toast("הסל נטען מחדש")
+
+
+def _qlabel(it):
+    return it["q"] + (f" × {format(it['qty'], 'g')}" + (" ק״ג" if it["kg"] else "") if it["qty"] != 1 else "")
+
+
+def compute(items, chains):
+    rows = []
+    for it in items:
+        if not it["barcode"]:
+            continue
+        pr, unit = _prices_for(it["barcode"], str(DB_PATH))
+        rows.append({"it": it, "prices": {c: pr.get(c) for c in chains}, "unit": unit})
+    totals = {}
+    for c in chains:
+        t, miss = 0.0, []
+        for r in rows:
+            p = r["prices"][c]
+            if p is None:
+                miss.append(_qlabel(r["it"]))
+            else:
+                t += p * r["it"]["qty"]
+        totals[c] = {"total": round(t, 2), "hits": len(rows) - len(miss), "missing": miss}
+    eligible = [c for c in chains if totals[c]["hits"] > 0]
+    common = [r for r in rows if eligible and all(r["prices"][c] is not None for c in eligible)]
+    fair = {c: round(sum(r["prices"][c] * r["it"]["qty"] for r in common), 2) for c in eligible}
+    return {"rows": rows, "totals": totals, "eligible": eligible, "common": common, "fair": fair}
+
+
+def save_history(res):
+    el = res["eligible"]
+    if not el:
+        return
+    s = sorted(el, key=lambda c: res["totals"][c]["total"])
+    ss["history"].insert(0, {
+        "date": datetime.now(_IL).strftime("%d/%m %H:%M"),
+        "items": [x["q"] for x in ss["items"]],
+        "chain": s[0], "total": res["totals"][s[0]]["total"],
+        "savings": round(res["totals"][s[-1]]["total"] - res["totals"][s[0]]["total"], 2),
+        "list": [dict(x) for x in ss["items"]],
+    })
+    ss["history"] = ss["history"][:20]
+    _toast("הסל נשמר ב״הסלים שלי״")
+
+
+# ═══════════════════════════════════════════════════════
+# 5) חלונית "מצב הנתונים" (כל הפירוט הטכני)
+# ═══════════════════════════════════════════════════════
+@st.dialog("מצב הנתונים", width="large")
+def data_status_dialog():
+    if DATA_OK:
+        ui.md(ui.alert(f"כל {len(_found_keys)} הרשתות נטענו בהצלחה, והנתונים מעודכנים.", "ok", "✓"))
+    else:
+        if _missing_names:
+            ui.md(ui.alert(f"נטענו רק {len(_found_keys)} מתוך {len(ONLINE_CHAINS)} הרשתות. חסרות: {', '.join(_missing_names)}. "
+                           "כנראה שהאפליקציה קוראת קובץ נתונים ישן או חלקי — ראי ״קבצי הנתונים״ למטה."))
+        if _need_reboot:
+            ui.md(ui.alert("נדרש Reboot: " + " · ".join(_need_reboot) +
+                           " — בתפריט ⋯ ← Reboot app. בלי זה האפליקציה תמשיך לעבוד עם הגרסה הישנה.", "warn", "🔄"))
+    ui.md(f'<div class="stat-grid">'
+          f'<div class="stat"><div class="v num">{total_rows:,}</div><div class="l">מחירים במאגר</div></div>'
+          f'<div class="stat"><div class="v num">{_uniq:,}</div><div class="l">מוצרים ייחודיים</div></div>'
+          f'<div class="stat"><div class="v">{len(_found_keys)}</div><div class="l">רשתות</div></div>'
+          f'<div class="stat"><div class="v num" style="font-size:15px">{ui.esc((_last_upd or "—")[:16])}</div><div class="l">עדכון אחרון</div></div></div>')
+    ui.md('<div class="h2" style="font-size:16px;margin-bottom:4px">רשתות במאגר</div>' + "".join(
+        f'<div class="chain-line">{ui.chain_mark(c, cname(c))}<span style="flex:1">{ui.esc(cname(c))}</span>'
+        f'<span class="tiny num">{n:,} מחירים · עודכן {ui.esc((u or "—")[:10])}</span><span class="badge ok">✓</span></div>'
+        for c, n, u in (info or [])))
+    if _missing_names:
+        ui.md("".join(f'<div class="chain-line"><span class="cm" style="background:#CBD5CF">?</span>'
+                      f'<span style="flex:1">{ui.esc(n)}</span><span class="badge warn">לא במאגר</span></div>' for n in _missing_names))
+    st.write("")
+    with st.expander("📁 קבצי הנתונים — למה נבחר הקובץ הזה?", expanded=bool(_missing_names)):
+        st.caption(f"קובץ שנטען: `{DB_PATH.name}` · גרסת קוד: `{APP_VERSION}`"
+                   + (" · הנתונים נמשכו מהעדכון האוטומטי היומי (ענף data)" if REMOTE_USED else ""))
+        st.dataframe(pd.DataFrame([{
+            "קובץ": _pth.name, "רשתות": _ch, "שורות": _rw, "גודל (MB)": round(_sz / 1048576, 1),
+            "עודכן": _dt.datetime.fromtimestamp(_pth.stat().st_mtime).strftime("%d/%m %H:%M"),
+            "נבחר": "✅" if _pth == DB_PATH else ""} for _pth, (_ch, _rw, _sz) in DB_SCAN]),
+            use_container_width=True, hide_index=True)
+        st.caption("סדר העדיפויות: 1) הכי הרבה רשתות · 2) הכי הרבה שורות · 3) קובץ בשם prices.db · 4) הגודל.")
+    with st.expander("🕒 השוואה מול גיטהאב — האם צריך Reboot?", expanded=bool(_need_reboot)):
+        if not _gh_info:
+            st.info("לא הצלחתי לקרוא את גיטהאב כרגע (אין רשת או הגבלת קצב). אפשר לנסות שוב בעוד דקה.")
+        else:
+            st.dataframe(pd.DataFrame(_rows_cmp), use_container_width=True, hide_index=True)
+            if not _need_reboot:
+                st.caption("✅ הקבצים שבסביבה תואמים את מה שבגיטהאב — אין צורך ב-Reboot.")
+    c1, c2 = st.columns([1, 1.4], vertical_alignment="center")
+    with c1:
+        if st.button("🔄 לאתר מחדש את קובץ הנתונים", use_container_width=True,
+                     help="סורק שוב את קובצי prices*.db, מנקה את הזיכרון הפנימי ובוחר את הקובץ עם הכי הרבה רשתות"):
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.rerun()
+    with c2:
+        st.caption(f"סריקה אחרונה: {datetime.now(_IL).strftime('%d/%m/%Y %H:%M:%S')}")
+
+
+# ═══════════════════════════════════════════════════════
+# 6) כותרת עליונה + ניווט
+# ═══════════════════════════════════════════════════════
+with st.container(key="sm_top"):
+    _l, _r = st.columns([3, 2], vertical_alignment="center")
+    with _l:
+        ui.md(ui.logo_html())
+    with _r:
+        with st.container(key="sm_status"):
+            _upd_txt = (_last_upd or "")[:10]
+            if DATA_OK:
+                _lbl = f"🟢 מחירים מעודכנים · {_upd_txt}" if _upd_txt else "🟢 מחירים מעודכנים"
+            else:
+                _lbl = "🟠 מצב הנתונים"
+            if st.button(_lbl, key="btn_status"):
+                data_status_dialog()
+
+if not info:
+    ui.md(ui.alert("אין נתונים במסד. הריצי את הסקרייפר: <code>python scraper.py --chains shufersal --limit 5</code>"))
+    st.stop()
+
+TABS = ["🛒 השוואת סל", "🥕 ירקות ופירות", "🔍 כל המחירים", "🧾 הסלים שלי", "💬 איך זה עובד"]
+with st.container(key="sm_nav"):
+    st.segmented_control("ניווט", TABS, default=TABS[0], key="nav",
+                         label_visibility="collapsed", on_change=cb_nav_guard)
+tab = ss.get("nav") or TABS[0]
+ss["_last_nav"] = tab
+
+if not DATA_OK:
+    _cA, _cB = st.columns([5, 1.2], vertical_alignment="center")
+    with _cA:
+        ui.md(ui.alert(("חסרות רשתות במאגר: " + ", ".join(_missing_names) + ". ") if _missing_names else
+                       "בגיטהאב יש גרסה חדשה יותר של הנתונים — נדרש Reboot."))
+    with _cB:
+        if st.button("לפרטים", key="btn_status2", use_container_width=True):
+            data_status_dialog()
+
+# ─── בחירת רשתות (משותף לכל הלשוניות) ───
+_available = [c for c in ALL_CHAINS if c in _found_keys] + [c for c in _found_keys if c not in ALL_CHAINS]
+ss.setdefault("_chains", [c for c in _available if c in ONLINE_CHAINS] or _available)
+_selected_chains = [c for c in ss["_chains"] if c in _found_keys]
+
+
+def cb_chains():
+    ss["_chains"] = list(ss.get("chains_w") or [])
+
+
+def chains_card(key):
+    with st.container(key=f"card_chains{key}"):
+        a, b = st.columns([4, 1], vertical_alignment="center", gap="small")
+        with a:
+            ui.md(ui.chainbar_html(_selected_chains, CHAINS_HE, len(_available)))
+        with b:
+            with st.popover("שינוי"):
+                ui.md('<div class="h2" style="font-size:16px">אילו רשתות להשוות?</div>'
+                      '<div class="tiny" style="margin:2px 0 8px">ברירת המחדל: רשתות שמוכרות גם אונליין. צריך לפחות 2.</div>')
+                ss["chains_w"] = list(_selected_chains)
+                st.multiselect("רשתות", options=_available, key="chains_w", on_change=cb_chains,
+                               format_func=cname, label_visibility="collapsed")
+    if len(_selected_chains) < 2:
+        ui.md(ui.alert("בחרי לפחות 2 רשתות כדי להשוות."))
+
+
+QUICK = [
+    ("🥛 סל בסיסי", "חלב, לחם, ביצים…", ["2 חלב 3%", "לחם אחיד", "ביצים", "גבינה צהובה", "קוטג'", "עגבניות"]),
+    ("🍿 חטיפים", "במבה, ביסלי, גלידה", ["3 במבה", "2 ביסלי", "עוגיות", "גלידה", "שוקולד פרה"]),
+    ("🍳 בישול לשבוע", "עוף, אורז, ירקות", ["עוף", "אורז", "שמן", "בצל", "מלפפונים"]),
+    ("🧽 ניקיון", "כביסה, כלים, נייר", ["אבקת כביסה", "נייר טואלט", "סבון כלים", "אקונומיקה"]),
+]
+
+# ═══════════════════════════════════════════════════════
+# 7) לשונית: השוואת סל
+# ═══════════════════════════════════════════════════════
+if tab == TABS[0]:
+    ui.md(ui.page_head("מה קונים היום? נמצא לך את הסל הכי זול.",
+                       "מוסיפים מוצרים — ורואים מיד באיזו רשת זה יוצא הכי משתלם. מחירים רשמיים, מתעדכנים כל בוקר.",
+                       display=True))
+    col_list, col_res = st.columns([1.05, 1], gap="large")
+
+    # ─────────── עמודת הרשימה ───────────
+    with col_list:
+        chains_card("_b")
+        with st.container(key="card_list"):
+            n_items = len(ss["items"])
+            with st.container(key="inl_head"):
+                h1, h2 = st.columns([4, 1], vertical_alignment="center")
+            with h1:
+                ui.md(f'<div class="h2">הרשימה שלי{f" <span class=tiny>· {n_items} מוצרים</span>" if n_items else ""}</div>')
+            with h2:
+                if n_items:
+                    st.button("ניקוי", key="btn_clear", on_click=cb_clear)
+
+            if HAS_SEARCHBOX:
+                # השלמה אוטומטית תוך כדי הקלדה (streamlit-searchbox)
+                with st.container(key="adder_sb"):
+                    st_searchbox(
+                        search_products,
+                        placeholder="מה להוסיף? למשל: 2 חלב, קוטג׳, 1.5 קילו עגבניות…",
+                        key="adder_search",
+                        clear_on_submit=True,
+                        submit_function=cb_pick_suggestion,
+                        debounce=250,
+                        style_overrides=SEARCHBOX_STYLE,
+                    )
+                ui.md('<div class="tiny" style="margin:2px 0 4px">מתחילים להקליד ובוחרים מוצר מהרשימה — '
+                      'או בוחרים בשורה הראשונה כדי להוסיף בדיוק מה שכתבת.</div>')
+            else:
+                with st.form("adder_form", clear_on_submit=False, border=False):
+                    with st.container(key="adder"):
+                        fa, fb = st.columns([5, 1.2], vertical_alignment="bottom")
+                        with fa:
+                            st.text_input("מוצר", key="adder_text", label_visibility="collapsed",
+                                          placeholder="מה להוסיף? למשל: 2 חלב, קוטג׳, 1.5 קילו עגבניות…")
+                        with fb:
+                            st.form_submit_button("הוספה", type="primary", on_click=cb_add, use_container_width=True)
+
+            if n_items:
+                for it in ss["items"]:
+                    with st.container(key=f"row_{it['uid']}"):
+                        c0, c1, c2, c3, c4 = st.columns([10, 1, 1, 1, 1], vertical_alignment="center")
+                        with c0:
+                            ui.md(ui.item_html(it["q"], it["name"], it["status"]))
+                        with c1:
+                            st.button("+", key=f"p_{it['uid']}", on_click=cb_qty, args=(it["uid"], 1))
+                        with c2:
+                            ui.md(ui.qty_html(it["qty"], it["kg"]))
+                        with c3:
+                            st.button("−", key=f"m_{it['uid']}", on_click=cb_qty, args=(it["uid"], -1))
+                        with c4:
+                            st.button("✕", key=f"x_{it['uid']}", on_click=cb_remove, args=(it["uid"],), help="הסרה")
+                        if it["status"] == "unclear" and it["cands"]:
+                            with st.container(key=f"chips_{it['uid']}"):
+                                ccols = st.columns(len(it["cands"]))
+                                for j, cd in enumerate(it["cands"]):
+                                    with ccols[j]:
+                                        _nm = cd["name"] if len(cd["name"]) <= 30 else cd["name"][:29] + "…"
+                                        st.button(_nm, key=f"c_{it['uid']}_{j}", on_click=cb_pick, args=(it["uid"], cd),
+                                                  help=f"{cd['name']} · {cd.get('brand', '')}")
+            else:
+                ui.md('<div class="tiny" style="margin:6px 0 2px;font-weight:600;color:var(--ink-2)">או התחילי מסל מוכן:</div>')
+                with st.container(key="grid2_quick"):
+                    qc = st.columns(4)
+                    for i, (t, d, lines) in enumerate(QUICK):
+                        with qc[i]:
+                            st.button(f"{t}  \n{d}", key=f"q_{i}", on_click=cb_quick, args=(lines, t), use_container_width=True)
+
+            with st.container(key="foot_list"):
+                f1, f2, f3, f4 = st.columns(4)
+                with f1:
+                    with st.popover("📋 הדבקת רשימה"):
+                        ui.md('<div class="tiny" style="margin-bottom:6px">מוצר בכל שורה. אפשר כמות לפני השם: ״3 במבה״, ״2 קילו עגבניות״, ״חלב × 2״.</div>')
+                        st.text_area("רשימה", key="paste_text", height=180, label_visibility="collapsed",
+                                     placeholder="2 חלב 3%\nלחם אחיד\nביצים\nקוטג'")
+                        st.button("הוספה לסל", key="btn_paste", type="primary", on_click=cb_paste, use_container_width=True)
+                with f2:
+                    with st.popover("📄 העלאת קובץ"):
+                        uploaded = st.file_uploader("CSV / TXT / Excel", type=["csv", "txt", "xlsx", "xls"], key="list_upload",
+                                                    help="עמודה של שמות מוצרים, ואם יש גם עמודת כמות — היא תיקרא אוטומטית")
+                        st.download_button("⬇️ תבנית רשימה", "מוצר,כמות\nחלב 3%,2\nלחם אחיד,1\nביצים L,12\nקוטג',1\n".encode("utf-8-sig"),
+                                           file_name="תבנית_רשימת_קניות.csv", mime="text/csv", use_container_width=True)
+                with f3:
+                    _csv = "מוצר,כמות\n" + "\n".join(f"{x['q']},{format(x['qty'], 'g')}" for x in ss["items"]) + "\n"
+                    st.download_button("💾 שמירת הרשימה", _csv.encode("utf-8-sig"), file_name="הרשימה_שלי.csv",
+                                       mime="text/csv", disabled=not n_items)
+                with f4:
+                    _save_clicked = st.button("🧾 שמירה לסלים שלי", key="btn_hist", disabled=not n_items)
+
+            # קריאת קובץ שהועלה (פעם אחת לכל קובץ)
+            if uploaded is not None and ss.get("_upl_id") != getattr(uploaded, "file_id", uploaded.name):
+                ss["_upl_id"] = getattr(uploaded, "file_id", uploaded.name)
+                try:
+                    if uploaded.name.lower().endswith((".xlsx", ".xls")):
+                        _df_up = pd.read_excel(uploaded)
+                    else:
+                        _raw = uploaded.getvalue().decode("utf-8-sig", errors="replace")
+                        _lr = [l for l in _raw.splitlines() if l.strip()]
+                        _df_up = pd.read_csv(_io.StringIO(_raw)) if _lr and "," in _lr[0] else pd.DataFrame({"מוצר": [l.strip() for l in _lr]})
+                    _cols = {str(c).strip().lower(): c for c in _df_up.columns}
+                    _name_col = next((_cols[k] for k in ("מוצר", "פריט", "שם", "product", "name", "item") if k in _cols), _df_up.columns[0])
+                    _qty_col = next((_cols[k] for k in ("כמות", "מס'", "quantity", "qty", "count") if k in _cols), None)
+                    _parsed = []
+                    for _, _r in _df_up.iterrows():
+                        _nm = str(_r.get(_name_col, "") or "").strip()
+                        if not _nm or _nm.lower() in ("nan", "none"):
+                            continue
+                        _pref = ""
+                        if _qty_col is not None:
+                            try:
+                                _q = float(_r.get(_qty_col))
+                                _pref = f"{int(_q) if _q == int(_q) else _q} "
+                            except Exception:
+                                pass
+                        _parsed.append(f"{_pref}{_nm}".strip())
+                    if _parsed:
+                        add_lines(_parsed)
+                        _toast(f"נטענו {len(_parsed)} פריטים מהקובץ")
+                        st.rerun()
+                    else:
+                        ui.md(ui.alert("לא נמצאו פריטים בקובץ — ודאי שיש בו עמודה עם שמות מוצרים."))
+                except Exception as _e:
+                    ui.md(ui.alert(f"לא הצלחתי לקרוא את הקובץ: {ui.esc(str(_e))}"))
+
+    # ─────────── עמודת התוצאות ───────────
+    res = compute(ss["items"], _selected_chains) if len(_selected_chains) >= 2 else None
+    if res and _save_clicked:
+        save_history(res)
+
+    with col_res:
+        if not res or not res["rows"] or not res["eligible"]:
+            with st.container(key="card_empty"):
+                ui.md(ui.empty_html("🧺", "הסל עדיין ריק",
+                                    "הוסיפי מוצרים — וההשוואה בין הרשתות תופיע כאן מיד, בלי ללחוץ על שום כפתור."))
+        else:
+            tot, el = res["totals"], res["eligible"]
+            any_missing = any(tot[c]["missing"] for c in el)
+            mode = "all"
+            if any_missing and res["common"]:
+                mode = st.segmented_control("אופן ההשוואה", ["כל הסל", "השוואה הוגנת"], default="כל הסל",
+                                            key="cmp_mode", label_visibility="collapsed") or "כל הסל"
+                mode = "fair" if mode == "השוואה הוגנת" else "all"
+            if mode == "fair":
+                vals = sorted(((c, res["fair"][c], 0) for c in el), key=lambda x: x[1])
+                label = f"הזולה בהשוואה הוגנת · {len(res['common'])} פריטים משותפים"
+            else:
+                # קודם כל מי שכוללת את הכי הרבה מהסל, ורק אז לפי מחיר — כדי שרשת עם פריטים חסרים לא תנצח בטעות
+                vals = sorted(((c, tot[c]["total"], len(tot[c]["missing"])) for c in el), key=lambda x: (x[2], x[1]))
+                _full = vals[0][2] == 0
+                label = (f"הכי זול לסל שלך · {len(res['rows'])} פריטים" if _full else
+                         f"הכי זול מבין הרשתות שיש בהן הכי הרבה מהסל · {len(res['rows']) - vals[0][2]} מתוך {len(res['rows'])} פריטים")
+            best, worst = vals[0], vals[-1]
+            note = None
+            if mode == "all" and tot[best[0]]["missing"]:
+                note = (f"שימי לב: ב{ui.esc(cname(best[0]))} חסר {ui.esc(', '.join(tot[best[0]]['missing']))}, "
+                        "ולכן המחיר נראה נמוך יותר. בחרי ״השוואה הוגנת״ למעלה.")
+            ui.md(ui.winner_html(best[0], cname(best[0]), best[1], label, worst[1] - best[1], cname(worst[0]), note))
+
+            with st.container(key="card_rank"):
+                sub = (f"רק {len(res['common'])} הפריטים שנמכרים בכל הרשתות — כך אף רשת לא מקבלת יתרון על פריט חסר."
+                       if mode == "fair" else
+                       "משוקלל לפי הכמויות. רשתות שכוללות את כל הסל מופיעות ראשונות.")
+                ui.md(ui.rank_html([(c, cname(c), t, m) for c, t, m in vals], subtitle=sub))
+
+            # אזהרות משקל
+            _w = [r for r in res["rows"] if r["it"]["kg"]]
+            _not_kg = [r["it"]["q"] for r in _w if not any(k in str(r["unit"]) for k in ("גרם", "קילו", 'ק"ג', "קג"))]
+            if _not_kg:
+                ui.md(ui.alert("אלה זוהו כמוצר לפי יחידה/אריזה ולא לפי משקל: " + ui.esc(", ".join(_not_kg)) +
+                               " — להשוואה לפי קילו עברי ללשונית 🥕 ירקות ופירות."))
+
+            with st.container(key="card_breakdown"):
+                ui.md(ui.breakdown_html(
+                    [(r["it"]["q"], r["it"]["qty"], r["it"]["kg"], r["it"]["name"], r["prices"]) for r in res["rows"]],
+                    _selected_chains, CHAINS_HE))
+
+            if any_missing:
+                with st.expander("⚖️ הוגנות ההשוואה — מי לא כללה איזה פריט"):
+                    st.caption("רשת שלא מוכרת פריט מהסל שלך מקבלת יתרון לא הוגן, כי הפריט פשוט לא נספר לה.")
+                    ui.md("".join(
+                        f'<div class="miss-line"><b>{ui.esc(cname(c))}</b> — לא כללה {len(tot[c]["missing"])}: '
+                        f'{ui.esc(" · ".join(tot[c]["missing"]))}</div>'
+                        for c in sorted(el, key=lambda c: -len(tot[c]["missing"])) if tot[c]["missing"]))
+                    if not res["common"]:
+                        st.info("אין אפילו פריט אחד שכל הרשתות כללו — לכן אי אפשר להציג השוואה הוגנת מלאה.")
+
+            _unid = [x["q"] for x in ss["items"] if not x["barcode"]]
+            if _unid:
+                st.caption("לא נכללו בחישוב (לא זוהו): " + " · ".join(_unid))
+            ui.md(ui.float_html(cname(best[0]), best[1]))
+
+# ═══════════════════════════════════════════════════════
+# 8) לשונית: ירקות ופירות לפי קילו
+# ═══════════════════════════════════════════════════════
+elif tab == TABS[1]:
+    ui.md(ui.page_head("ירקות ופירות, לפי קילו",
+                       "המחיר הכי זול לק״ג בכל רשת. בוחרים כמה קילו — ומקבלים את הסל הירוק הזול."))
+    chains_card("_p")
+
+    @st.cache_data(show_spinner=False, ttl=3600)
+    def _produce_all(chains_t, _db):
+        return produce_prices(PRODUCE_ITEMS, chains=list(chains_t))
+
+    with st.spinner("מחשב מחיר לקילו בכל רשת…"):
+        _pmap = _produce_all(tuple(_selected_chains), str(DB_PATH))
+    _pchains = [c for c in _available if c in _selected_chains and any(c in v for v in _pmap.values())]
+    _names = [x["he"] for x in PRODUCE_ITEMS]
+    _default_on = {"עגבניות", "מלפפונים", "בננות", "תפוחי אדמה", "בצל"}
+    for nm in _names:
+        ss.setdefault(f"prod_kg_{nm}", 1.0 if nm in _default_on else 0.0)
+
+    if not _pchains:
+        ui.md(ui.alert("לא נמצאו מוצרים לפי משקל ברשתות שנבחרו."))
+    else:
+        g_col, r_col = st.columns([1.6, 1], gap="large")
+        with g_col:
+            with st.container(key="grid2_produce"):
+                # שורה אחת של עמודות שנשברת אוטומטית (3 בטור במחשב, 2 בטור בטלפון) — ראו CSS grid2_produce
+                cols = st.columns(len(_names))
+                i0 = 0
+                if True:
+                    for j, nm in enumerate(_names):
+                        have = {c: v[0] for c, v in _pmap.get(nm, {}).items() if c in _pchains}
+                        bc = min(have, key=have.get) if have else None
+                        on = float(ss.get(f"prod_kg_{nm}", 0) or 0) > 0
+                        with cols[j]:
+                            with st.container(key=f"pcard{'on' if on else ''}_{i0 + j}"):
+                                ui.md(ui.produce_card_html(nm, have.get(bc) if bc else None, bc, cname(bc) if bc else ""))
+                                st.number_input(f"{nm} (ק\"ג)", min_value=0.0, step=0.5, key=f"prod_kg_{nm}", format="%.1f",
+                                                label_visibility="collapsed", disabled=not have)
+
+        _pick = [nm for nm in _names if float(ss.get(f"prod_kg_{nm}", 0) or 0) > 0]
+        _totals = {}
+        for c in _pchains:
+            s, cnt, miss = 0.0, 0, []
+            for nm in _pick:
+                v = _pmap.get(nm, {}).get(c)
+                if v is None:
+                    miss.append(nm)
+                else:
+                    s += v[0] * float(ss[f"prod_kg_{nm}"])
+                    cnt += 1
+            _totals[c] = {"total": round(s, 2), "items": cnt, "missing": miss}
+        _sorted = sorted(_totals.items(), key=lambda kv: kv[1]["total"])
+
+        with r_col:
+            if not _pick or _sorted[0][1]["total"] <= 0 and _sorted[-1][1]["total"] <= 0:
+                with st.container(key="card_pempty"):
+                    ui.md(ui.empty_html("🥕", "הוסיפי ירקות לסל", "כתבי כמה קילו ליד כל ירק או פרי."))
+            else:
+                _el = [(c, v) for c, v in _sorted if v["items"] > 0]
+                kg_sum = sum(float(ss[f"prod_kg_{nm}"]) for nm in _pick)
+                (bc_, bv), (wc_, wv) = _el[0], _el[-1]
+                ui.md(ui.winner_html(bc_, cname(bc_), bv["total"],
+                                     f"הסל הירוק שלך · {len(_pick)} פריטים · {format(kg_sum, 'g')} ק״ג",
+                                     wv["total"] - bv["total"], cname(wc_),
+                                     (f"ב{ui.esc(cname(bc_))} אין מחיר לפי משקל עבור: {ui.esc(', '.join(bv['missing']))}"
+                                      if bv["missing"] else None)))
+                with st.container(key="card_prank"):
+                    ui.md(ui.rank_html([(c, cname(c), v["total"], len(v["missing"])) for c, v in _el]))
+                _rows_tot = [{"רשת": cname(c), 'סה"כ לסל (₪)': v["total"], "פריטים שנמצאו": v["items"],
+                              "חסרים": len(v["missing"])} for c, v in _sorted]
+
+        st.write("")
+        with st.expander("📊 טבלת מחיר לקילו בכל הרשתות"):
+            ui.md(ui.matrix_html(_names, _pchains, CHAINS_HE, _pmap))
+            _df_p = pd.DataFrame([{"ירק / פרי": nm, **{cname(c): (_pmap.get(nm, {}).get(c) or (None,))[0] for c in _pchains}}
+                                  for nm in _names])
+            st.download_button("⬇️ הורדת טבלת המחירים לקילו (CSV)", _df_p.to_csv(index=False).encode("utf-8-sig"),
+                               file_name="ירקות_ופירות_לפי_קילו.csv", mime="text/csv")
+        with st.expander("🔍 איזה מוצר נבחר לכל רשת (ולמה המחיר הזה)"):
+            _src = [{"ירק / פרי": nm, "רשת": cname(c), "המוצר שנבחר": v[1], "₪ לקילו": v[0]}
+                    for nm in _names for c, v in _pmap.get(nm, {}).items() if c in _pchains]
+            if _src:
+                st.dataframe(pd.DataFrame(_src).sort_values(["ירק / פרי", "₪ לקילו"]),
+                             use_container_width=True, hide_index=True, height=320)
+            st.caption("הבחירה: המוצר הזול ביותר לקילו בכל רשת מבין המוצרים שנמכרים לפי משקל (ק״ג / קילוגרם).")
+
+# ═══════════════════════════════════════════════════════
+# 9) לשונית: כל המחירים (חיפוש)
+# ═══════════════════════════════════════════════════════
+elif tab == TABS[2]:
+    ui.md(ui.page_head("כל המחירים במאגר", "חפשי מוצר לפי שם או ברקוד, ובדקי כמה הוא עולה בכל רשת."))
+    chains_card("_s")
+    CHAIN_KEYS = [c for c in _available if c in _selected_chains]
+    CHAIN_COLS = [cname(c) for c in CHAIN_KEYS]
+
+    s1, s2, s3 = st.columns([2.4, 1, 1], vertical_alignment="bottom")
+    q = s1.text_input("חיפוש", "", key="data_q", placeholder="🔍  חפשי מוצר, מותג או ברקוד…", label_visibility="collapsed")
+    only_shared = s2.checkbox("רק מוצרים ביותר מרשת אחת", value=True, key="data_shared")
+    rows_limit = s3.selectbox("כמה שורות", [100, 200, 500, 1000, 5000], index=1, key="data_limit", label_visibility="collapsed",
+                              format_func=lambda n: f"עד {n:,} שורות")
 
     where, params = [], []
     if q.strip():
         where.append("(name LIKE ? OR barcode LIKE ?)")
         params += [f"%{q.strip()}%", f"%{q.strip()}%"]
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
-    min_chains = 1 if only_shared is False else 2
-
+    min_chains = 2 if only_shared else 1
     price_cols_sql = ",\n".join(
-        '               MAX(CASE WHEN chain = \'{c}\' THEN price END) AS "{h}"'.format(c=c, h=CHAINS_HE.get(c, c))
-        for c in CHAIN_KEYS
-    )
-    sql = f"""
-        SELECT barcode,
-               MAX(name) AS "מוצר",
-               MAX(brand) AS "מותג",
-{price_cols_sql},
-               COUNT(DISTINCT chain) AS "מספר רשתות"
-        FROM prices
-        {where_sql}
-        GROUP BY barcode
-        HAVING COUNT(DISTINCT chain) >= {int(min_chains)}
-        ORDER BY "מספר רשתות" DESC, "מוצר"
-        LIMIT {int(rows_limit)}
-    """
-    _conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query(sql, _conn, params=params)
-    _conn.close()
+        '               MAX(CASE WHEN chain = \'{c}\' THEN price END) AS "{h}"'.format(c=c, h=cname(c)) for c in CHAIN_KEYS)
 
-    if df.empty:
-        st.info("לא נמצאו מוצרים לחיפוש הזה. נסי מילה אחרת.")
+    if not CHAIN_KEYS:
+        ui.md(ui.alert("בחרי רשתות להצגה."))
     else:
-        df["המחיר הזול"] = df[CHAIN_COLS].min(axis=1).round(2)
-        df["הרשת הזולה"] = df[CHAIN_COLS].idxmin(axis=1)
-        st.success(f"מוצגים {len(df):,} מוצרים מתוך המאגר")
-        st.dataframe(df, use_container_width=True, hide_index=True, height=520)
-        st.download_button(
-            "⬇️ הורדת הטבלה לאקסל (CSV)",
-            df.to_csv(index=False).encode("utf-8-sig"),
-            file_name="prices_export.csv",
-            mime="text/csv",
-        )
-
-    # ─── תרשים: איזו רשת היא הזולה ביותר ───
-    st.markdown("---")
-    st.markdown("### 🏆 איזו רשת יוצאת הזולה ביותר?")
-    st.caption(f"לכל מוצר שבסינון הנוכחי נבדק המחיר בכל {len(CHAIN_COLS)} הרשתות, וכל פריט נזקף לרשת שהציעה בו את המחיר הנמוך.")
-
-    sql_all = f"""
-        SELECT barcode,
+        sql = f"""
+            SELECT barcode, MAX(name) AS "מוצר", MAX(brand) AS "מותג",
 {price_cols_sql},
-               COUNT(DISTINCT chain) AS n_chains
-        FROM prices
-        {where_sql}
-        GROUP BY barcode
-        HAVING COUNT(DISTINCT chain) >= {int(min_chains)}
-        LIMIT 60000
-    """
-    _c2 = sqlite3.connect(DB_PATH)
-    df_all = pd.read_sql_query(sql_all, _c2, params=params)
-    _c2.close()
+                   COUNT(DISTINCT chain) AS "מספר רשתות"
+            FROM prices {where_sql}
+            GROUP BY barcode HAVING COUNT(DISTINCT chain) >= {int(min_chains)}
+            ORDER BY "מספר רשתות" DESC, "מוצר" LIMIT {int(rows_limit)}"""
+        _conn = sqlite3.connect(DB_PATH)
+        df = pd.read_sql_query(sql, _conn, params=params)
+        _conn.close()
 
-    if df_all.empty:
-        st.info("אין נתונים לתרשים בסינון הזה.")
-    else:
-        cheapest = df_all[CHAIN_COLS].idxmin(axis=1).dropna()
-        counts = cheapest.value_counts()
-        chart_df = counts.to_frame("מוצרים שבהם הרשת זולה")
-        chart_df["אחוז מהמוצרים"] = (counts / counts.sum() * 100).round(1)
-        chart_df["מקום"] = range(1, len(chart_df) + 1)
-
-        left, right = st.columns([3, 2])
+        left, right = st.columns([1.7, 1], gap="large")
         with left:
-            st.bar_chart(chart_df["מוצרים שבהם הרשת זולה"])
-        with right:
-            st.dataframe(
-                chart_df[["מקום", "מוצרים שבהם הרשת זולה", "אחוז מהמוצרים"]],
-                use_container_width=True, hide_index=False, height=340,
-            )
-
-        top_chain = counts.index[0]
-        top_n = int(counts.iloc[0])
-        st.success(
-            f"👑 **{top_chain}** היא הרשת הזולה ביותר ב‑{top_n:,} מוצרים "
-            f"({counts.iloc[0] / counts.sum() * 100:.1f}% מהמוצרים שנבדקו), "
-            f"מתוך {int(counts.sum()):,} מוצרים עם מחיר ביותר מרשת אחת."
-        )
-        st.caption("החישוב מבוסס על הסינון שבחרת למעלה (חיפוש / מספר רשתות). "
-                   "שימי לב: זו ספירת 'מי הזול בפריט הבודד' — לא בהכרח הסל הכולל הזול ביותר.")
-
-
-# ═══════════════════════════════════════════════════════
-# ─── לשונית: ירקות ופירות לפי קילו ─────────────────────
-# ═══════════════════════════════════════════════════════
-with tab_produce:
-    st.markdown("### 🥕 ירקות ופירות — השוואה לפי קילו")
-    st.caption("המחירים כאן הם **מחיר לקילו (₪ לק\"ג)**. לכל רשת נלקח המוצר **הזול ביותר לקילו** "
-               "מבין מוצרי הירק/פרי שהיחידה שלהם היא קילו (ק\"ג / קילוגרם) באותה רשת. "
-               "רשת שלא מופיעה — לא מפרסמת את הירק לפי משקל.")
-
-    _produce_names = [x["he"] for x in PRODUCE_ITEMS]
-    _produce_default = [x for x in ["עגבניות", "מלפפונים", "בננות", "תפוחים",
-                                    "תפוחי אדמה", "גזר", "בצל", "פלפלים", "ענבים", "מנגו"]
-                        if x in _produce_names]
-    _produce_pick = st.multiselect(
-        "אילו ירקות ופירות להשוות?",
-        options=_produce_names,
-        default=_produce_default,
-        key="produce_pick",
-        help="הבחירה חלה על הטבלה, על התרשים ועל חישוב הסל בקילו.",
-    )
-
-    if not _produce_pick:
-        st.info("בחרי לפחות ירק או פרי אחד.")
-    else:
-        _defs = [x for x in PRODUCE_ITEMS if x["he"] in _produce_pick]
-        with st.spinner("🔎 מחשב מחיר לקילו בכל רשת..."):
-            _pmap = produce_prices(_defs, chains=_selected_chains)
-        _pchains = [c for c in _ALL_CHAIN_KEYS
-                    if c in _selected_chains and any(c in v for v in _pmap.values())]
-
-        if not _pchains:
-            st.warning("לא נמצאו מוצרים לפי משקל לירקות/פירות שבחרת ברשתות שנבחרו.")
-        else:
-            _pcols = [CHAINS_HE.get(c, c) for c in _pchains]
-
-            # ─── טבלת מחיר לקילו ───
-            _tbl_rows = []
-            for _nm in _produce_pick:
-                _row = {"ירק / פרי": _nm}
-                _vals = []
-                for _c in _pchains:
-                    _v = _pmap.get(_nm, {}).get(_c)
-                    _row[CHAINS_HE.get(_c, _c)] = _v[0] if _v else None
-                    if _v:
-                        _vals.append(_v[0])
-                _have = {h: _row[h] for h in _pcols if _row.get(h) is not None}
-                if _have:
-                    _best = min(_have, key=lambda h: _have[h])
-                    _row["הזול לקילו"] = _have[_best]
-                    _row["רשת זולה"] = _best
+            with st.container(key="card_search"):
+                if df.empty:
+                    ui.md(ui.empty_html("🔍", "לא נמצא", "נסי מילה אחרת, או חלק מהברקוד."))
                 else:
-                    _row["הזול לקילו"] = None
-                    _row["רשת זולה"] = "—"
-                _tbl_rows.append(_row)
-            _df_p = pd.DataFrame(_tbl_rows).set_index("ירק / פרי")
-            st.markdown("#### 📋 מחיר לקילו בכל רשת")
-            # תצוגה מצומצמת (נוחה בטלפון) - ואפשרות לפתוח את כל הרשתות
-            _compact_cols = ["הזול לקילו", "רשת זולה"]
-            _df_compact = _df_p[[c for c in _compact_cols if c in _df_p.columns]].reset_index()
-            _df_compact = _df_compact.rename(columns={"הזול לקילו": 'הזול (₪ לק"ג)', "רשת זולה": "רשת זולה"})
-            st.dataframe(_df_compact, use_container_width=True, hide_index=True)
-            with st.expander("📊 הצגת המחיר בכל הרשתות (טבלה מורחבת)"):
-                st.dataframe(_df_p, use_container_width=True)
-            st.download_button(
-                "⬇️ הורדת טבלת המחירים לקילו (CSV)",
-                _df_p.reset_index().to_csv(index=False).encode("utf-8-sig"),
-                file_name="ירקות_ופירות_לפי_קילו.csv",
-                mime="text/csv",
-            )
+                    df["המחיר הזול"] = df[CHAIN_COLS].min(axis=1).round(2)
+                    df["הרשת הזולה"] = df[CHAIN_COLS].idxmin(axis=1)
+                    ui.md(f'<div class="sec-head"><div class="h2">{"תוצאות" if q.strip() else "מוצרים נפוצים"}</div>'
+                          f'<span class="tiny">{len(df):,} מוצרים</span></div>')
+                    _rev = {cname(c): c for c in CHAIN_KEYS}
+                    for i, r in df.head(25).iterrows():
+                        ps = sorted(((_rev[h], float(r[h])) for h in CHAIN_COLS if pd.notna(r[h])), key=lambda x: x[1])
+                        if not ps:
+                            continue
+                        with st.container(key=f"srow_{i}"):
+                            a, b = st.columns([12, 1], vertical_alignment="center")
+                            with a:
+                                ui.md(ui.search_row_html(r["מוצר"], r["מותג"], len(ps), ps, CHAINS_HE))
+                            with b:
+                                st.button("＋", key=f"add_{r['barcode']}", help="הוספה לסל",
+                                          on_click=cb_add_barcode, args=(r["barcode"], str(r["מוצר"])))
+                    if len(df) > 25:
+                        st.caption(f"מוצגים 25 הראשונים — הטבלה המלאה ({len(df):,}) למטה.")
+            if not df.empty:
+                with st.expander(f"🗂️ הטבלה המלאה ({len(df):,} מוצרים) + הורדה לאקסל"):
+                    st.dataframe(df, use_container_width=True, hide_index=True, height=480)
+                    st.download_button("⬇️ הורדת הטבלה (CSV)", df.to_csv(index=False).encode("utf-8-sig"),
+                                       file_name="prices_export.csv", mime="text/csv")
 
-            # ─── כמויות בקילו ───
-            st.markdown("---")
-            st.markdown("#### ⚖️ הסל שלי בקילו")
-            _kg_vals = {}
-            _ncol = 3          # במובייל Streamlit מערם עמודות אוטומטית מתחת ל-640px
-            _cols = st.columns(_ncol)
-            for _i, _nm in enumerate(_produce_pick):
-                with _cols[_i % _ncol]:
-                    _kg_vals[_nm] = st.number_input(
-                        f"{_nm} (ק\"ג)", min_value=0.0, value=1.0, step=0.5,
-                        key=f"prod_kg_{_nm}",
-                    )
+        with right:
+            sql_all = f"""SELECT barcode,
+{price_cols_sql},
+                   COUNT(DISTINCT chain) AS n_chains
+            FROM prices {where_sql}
+            GROUP BY barcode HAVING COUNT(DISTINCT chain) >= {int(min_chains)} LIMIT 60000"""
+            _c2 = sqlite3.connect(DB_PATH)
+            df_all = pd.read_sql_query(sql_all, _c2, params=params)
+            _c2.close()
+            with st.container(key="card_wins"):
+                ui.md('<div class="h2">מי הזולה ביותר?</div>'
+                      '<div class="tiny" style="margin:2px 0 12px">באחוז כמה מהמוצרים כל רשת מציעה את המחיר הנמוך ביותר</div>')
+                if df_all.empty or len(CHAIN_COLS) < 2:
+                    st.caption("אין נתונים לתרשים בסינון הזה.")
+                else:
+                    counts = df_all[CHAIN_COLS].idxmin(axis=1).dropna().value_counts()
+                    ui.md(ui.hbars_html([(k, int(v)) for k, v in counts.items()], int(counts.sum())))
+                    ui.md(f'<div class="tiny" style="margin-top:12px;line-height:1.6">👑 <b>{ui.esc(counts.index[0])}</b> זולה ב-'
+                          f'{int(counts.iloc[0]):,} מוצרים מתוך {int(counts.sum()):,}. '
+                          'זו ספירה לפי מוצר בודד — לא בהכרח הסל הכולל הזול.</div>')
 
-            _totals = {}
-            for _c in _pchains:
-                _sum, _cnt, _miss = 0.0, 0, []
-                for _nm in _produce_pick:
-                    _v = _pmap.get(_nm, {}).get(_c)
-                    if _v is None:
-                        _miss.append(_nm)
-                    else:
-                        _sum += _v[0] * float(_kg_vals.get(_nm, 0.0))
-                        _cnt += 1
-                _totals[_c] = {"total": round(_sum, 2), "items": _cnt, "missing": _miss}
+# ═══════════════════════════════════════════════════════
+# 10) לשונית: הסלים שלי
+# ═══════════════════════════════════════════════════════
+elif tab == TABS[3]:
+    ui.md(ui.page_head("הסלים שלי", "ההשוואות ששמרת נשמרות רק אצלך, בחלון הדפדפן הזה."))
+    hist = ss["history"]
+    if not hist:
+        with st.container(key="card_hempty"):
+            ui.md(ui.empty_html("🧾", "עוד אין סלים שמורים", "אחרי השוואה, לחצי ״🧾 שמירה לסלים שלי״ מתחת לרשימה."))
+    else:
+        tot_sv = sum(h["savings"] for h in hist)
+        ui.md(f'<div class="hist-hero"><span style="font-size:40px">💰</span><div>'
+              f'<div class="tiny" style="color:var(--amber-ink);font-weight:600">חסכת עד עכשיו</div>'
+              f'<div class="big num">{ui.fmt(tot_sv)} ₪</div><div class="tiny" style="margin-top:4px">ב-{len(hist)} השוואות</div></div></div>')
+        with st.container(key="card_hist"):
+            for i, h in enumerate(hist):
+                with st.container(key=f"hrow_{i}"):
+                    a, b = st.columns([5, 1.3], vertical_alignment="center")
+                    with a:
+                        ui.md(ui.hist_html(h["chain"], cname(h["chain"]), h["total"], h["date"], h["items"], h["savings"]))
+                    with b:
+                        st.button("שוב את הסל הזה", key=f"reuse_{i}", on_click=cb_reuse, args=(i,), use_container_width=True)
 
-            _sorted = sorted(_totals.items(), key=lambda kv: kv[1]["total"])
-            _cheap_c, _cheap_v = _sorted[0]
-            _exp_c, _exp_v = _sorted[-1]
+# ═══════════════════════════════════════════════════════
+# 11) לשונית: איך זה עובד
+# ═══════════════════════════════════════════════════════
+else:
+    ui.md(ui.page_head("איך זה עובד", "שלושה צעדים, בלי הרשמה."))
+    ui.md(ui.help_html())
 
-            _rows_tot = [{
-                "רשת": CHAINS_HE.get(_c, _c),
-                "סה\"כ לסל (₪)": _v["total"],
-                "פריטים שנמצאו": _v["items"],
-                "חסרים": len(_v["missing"]),
-            } for _c, _v in _sorted]
-            st.dataframe(pd.DataFrame(_rows_tot), use_container_width=True, hide_index=True)
+ui.md('<div class="footer">סל משווה · מחירים מקבצי שקיפות המחירים הרשמיים של הרשתות · חינם ובלי הרשמה · בנוי בישראל</div>')
 
-            if _cheap_v["total"] > 0:
-                _save = round(_exp_v["total"] - _cheap_v["total"], 2)
-                st.success(
-                    f"🏆 הזול לסל הירקות והפירות: **{CHAINS_HE.get(_cheap_c, _cheap_c)}** — "
-                    f"**{_cheap_v['total']:.2f} ₪** · היקר: {CHAINS_HE.get(_exp_c, _exp_c)} "
-                    f"({_exp_v['total']:.2f} ₪) · חיסכון של **{_save:.2f} ₪**."
-                )
-                st.bar_chart(pd.DataFrame(_rows_tot).set_index("רשת")["סה\"כ לסל (₪)"])
-
-            if any(_v["missing"] for _v in _totals.values()):
-                for _c, _v in _sorted:
-                    if _v["missing"]:
-                        st.caption(f"⚠️ {CHAINS_HE.get(_c, _c)} ללא מחיר לפי משקל עבור: "
-                                   + " · ".join(_v["missing"]))
-
-            with st.expander("🔍 איזה מוצר נבחר לכל רשת (ולמה המחיר הזה)"):
-                _src = []
-                for _nm in _produce_pick:
-                    for _c, _v in _pmap.get(_nm, {}).items():
-                        if _c in _pchains:
-                            _src.append({"ירק / פרי": _nm, "רשת": CHAINS_HE.get(_c, _c),
-                                         "המוצר שנבחר": _v[1], "₪ לקילו": _v[0]})
-                if _src:
-                    st.dataframe(pd.DataFrame(_src).sort_values(["ירק / פרי", "₪ לקילו"]),
-                                 use_container_width=True, hide_index=True, height=320)
-                st.caption("הבחירה: המוצר הזול ביותר לקילו בכל רשת מבין המוצרים שנמכרים לפי משקל. "
-                           "אם לרשת יש כמה מוצרים לאותו ירק — מוצג הזול שבהם.")
+# טעינה מוקדמת של קטלוג ההשלמה (אחרי שהעמוד כבר הוצג) — כך ההקלדה הראשונה מהירה
+if HAS_SEARCHBOX:
+    _catalog(str(DB_PATH))
