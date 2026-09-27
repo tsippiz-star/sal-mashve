@@ -21,6 +21,7 @@ import streamlit as st
 from comparator import CHAINS_HE, produce_prices, PRODUCE_ITEMS
 from matcher import match_item, find_candidates
 import sm_style as ui
+import facets as fx
 
 APP_VERSION = "db-look v7 · עיצוב חדש · 2026-09-27"
 ROOT = Path(__file__).resolve().parent
@@ -415,7 +416,69 @@ def cb_remove(uid):
 def cb_pick(uid, cand):
     for it in ss["items"]:
         if it["uid"] == uid:
-            it.update(barcode=cand["barcode"], name=cand["name"], status="ok", cands=[])
+            it.update(barcode=cand["barcode"], name=cand["name"], status="ok", cands=[], group=None)
+
+
+def _group_desc(it):
+    fam = _family(it["group"]["query"], str(DB_PATH))
+    n = len(fx.filter_products(fam, it["group"]["sel"]))
+    s = fx.sel_summary(it["group"]["sel"])
+    return f"כל הסוגים{' · ' + s if s else ''} · {n} מוצרים — נלקח הזול בכל רשת"
+
+
+@st.dialog("כל הסוגים", width="large")
+def group_dialog(uid):
+    it = next((x for x in ss["items"] if x["uid"] == uid), None)
+    if not it:
+        return
+    base_q = it.get("group", {}).get("query") if it.get("group") else it["q"]
+    fam = _family(base_q, str(DB_PATH))
+    if not fam["products"]:
+        ui.md(ui.alert(f"לא מצאתי משפחת מוצרים עבור ״{ui.esc(base_q)}״. נסי שם כללי יותר (למשל ״חלב״ או ״יוגורט״)."))
+        return
+    cur = (it.get("group") or {}).get("sel") or fam["pre"]
+    ui.md(f'<p class="sub" style="margin-top:0">בחרי מה מתאים לך — כמה שרוצה בכל קטגוריה. '
+          f'בכל רשת נחשב <b>המוצר הזול ביותר</b> מבין מה שבחרת. קטגוריה שלא בחרת בה כלום = הכל.</p>')
+    sel = {}
+    for key, label in fx.FACET_ORDER:
+        vals = fam["facets"].get(key)
+        if not vals:
+            continue
+        sel[key] = st.pills(label, vals, selection_mode="multi", key=f"fx_{uid}_{key}",
+                            default=[v for v in cur.get(key, []) if v in vals]) or []
+    norm = True
+    matched = fx.filter_products(fam, sel)
+    sizes = {p["amt"] for p in matched if p["amt"]}
+    if len(sizes) > 1:
+        norm = st.toggle("להשוות לפי מחיר ליחידת מידה (מומלץ כשיש כמה גדלים)", value=(it.get("group") or {}).get("norm", True),
+                         key=f"fx_{uid}_norm")
+    prices, picks, info = fx.group_prices(fam, sel, _selected_chains, normalize=norm)
+    have = {c: p for c, p in prices.items() if p is not None}
+    if not matched:
+        ui.md(ui.alert("אין מוצרים שעונים על כל הבחירות יחד. נסי להסיר בחירה אחת."))
+    else:
+        ref = f" · מחיר מנורמל ל-{info['ref_label']}" if info["norm"] else ""
+        ui.md(f'<div class="sec-head" style="margin-top:6px"><div class="h2" style="font-size:16px">{len(matched)} מוצרים מתאימים</div>'
+              f'<span class="tiny">הזול בכל רשת{ref}</span></div>')
+        ui.md(ui.group_preview_html(
+            sorted(((c, cname(c), have[c], picks[c][0], picks[c][1]) for c in have), key=lambda x: x[2])[:6],
+            [p["name"] for p in matched[:12]], len(matched)))
+    b1, b2, b3 = st.columns([1.3, 1, 1])
+    with b1:
+        if st.button("שמירה", type="primary", use_container_width=True, disabled=not matched, key=f"fx_{uid}_ok"):
+            it["group"] = {"query": base_q, "sel": {k: v for k, v in sel.items() if v}, "norm": norm}
+            it.update(status="ok", cands=[])
+            _toast("עודכן: " + it["q"])
+            st.rerun()
+    with b2:
+        if it.get("group") and st.button("מוצר אחד בלבד", use_container_width=True, key=f"fx_{uid}_single",
+                                        help="חזרה למוצר הספציפי שזוהה בהתחלה"):
+            it["group"] = None
+            it["status"] = "ok" if it["barcode"] else "none"
+            st.rerun()
+    with b3:
+        if st.button("ביטול", use_container_width=True, key=f"fx_{uid}_cancel"):
+            st.rerun()
 
 
 def cb_clear():
@@ -459,9 +522,27 @@ def _qlabel(it):
     return it["q"] + (f" × {format(it['qty'], 'g')}" + (" ק״ג" if it["kg"] else "") if it["qty"] != 1 else "")
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def _family(query, _db):
+    return fx.family(_db, query)
+
+
+def _group_row(it, chains):
+    """מחיר לכל רשת לפריט מסוג 'קבוצה': הזול מבין כל המוצרים שעונים על הסינון."""
+    fam = _family(it["group"]["query"], str(DB_PATH))
+    prices, picks, info = fx.group_prices(fam, it["group"]["sel"], chains, normalize=it["group"].get("norm", True))
+    return prices, picks, info
+
+
 def compute(items, chains):
     rows = []
     for it in items:
+        if it.get("group"):
+            prices, picks, info = _group_row(it, chains)
+            if info["n"] == 0:
+                continue
+            rows.append({"it": it, "prices": prices, "unit": "", "picks": picks, "info": info})
+            continue
         if not it["barcode"]:
             continue
         pr, unit = _prices_for(it["barcode"], str(DB_PATH))
@@ -673,7 +754,10 @@ if tab == TABS[0]:
                     with st.container(key=f"row_{it['uid']}"):
                         c0, c1, c2, c3, c4 = st.columns([10, 1, 1, 1, 1], vertical_alignment="center")
                         with c0:
-                            ui.md(ui.item_html(it["q"], it["name"], it["status"]))
+                            if it.get("group"):
+                                ui.md(ui.item_html(it["q"], _group_desc(it), "group"))
+                            else:
+                                ui.md(ui.item_html(it["q"], it["name"], it["status"]))
                         with c1:
                             st.button("+", key=f"p_{it['uid']}", on_click=cb_qty, args=(it["uid"], 1))
                         with c2:
@@ -682,7 +766,12 @@ if tab == TABS[0]:
                             st.button("−", key=f"m_{it['uid']}", on_click=cb_qty, args=(it["uid"], -1))
                         with c4:
                             st.button("✕", key=f"x_{it['uid']}", on_click=cb_remove, args=(it["uid"],), help="הסרה")
-                        if it["status"] == "unclear" and it["cands"]:
+                        with st.container(key=f"grp_{it['uid']}"):
+                            if st.button("עריכת הסוגים" if it.get("group") else "כל הסוגים ← מותג, אחוז שומן, גודל",
+                                         key=f"g_{it['uid']}", icon=":material/tune:",
+                                         help="בחרי כמה מותגים / אחוזי שומן / גדלים — ובכל רשת יילקח הזול מביניהם"):
+                                group_dialog(it["uid"])
+                        if it["status"] == "unclear" and it["cands"] and not it.get("group"):
                             with st.container(key=f"chips_{it['uid']}"):
                                 ccols = st.columns(len(it["cands"]))
                                 for j, cd in enumerate(it["cands"]):
@@ -796,14 +885,16 @@ if tab == TABS[0]:
 
             # אזהרות משקל
             _w = [r for r in res["rows"] if r["it"]["kg"]]
-            _not_kg = [r["it"]["q"] for r in _w if not any(k in str(r["unit"]) for k in ("גרם", "קילו", 'ק"ג', "קג"))]
+            _not_kg = [r["it"]["q"] for r in _w if not r["it"].get("group") and not any(k in str(r["unit"]) for k in ("גרם", "קילו", 'ק"ג', "קג"))]
             if _not_kg:
                 ui.md(ui.alert("אלה זוהו כמוצר לפי יחידה/אריזה ולא לפי משקל: " + ui.esc(", ".join(_not_kg)) +
                                " — להשוואה לפי קילו עברי ללשונית 🥕 ירקות ופירות."))
 
             with st.container(key="card_breakdown"):
                 ui.md(ui.breakdown_html(
-                    [(r["it"]["q"], r["it"]["qty"], r["it"]["kg"], r["it"]["name"], r["prices"]) for r in res["rows"]],
+                    [(r["it"]["q"], r["it"]["qty"], r["it"]["kg"],
+                      (_group_desc(r["it"]) if r["it"].get("group") else r["it"]["name"]),
+                      r["prices"], r.get("picks")) for r in res["rows"]],
                     _selected_chains, CHAINS_HE))
 
             if any_missing:
@@ -829,12 +920,23 @@ elif tab == TABS[1]:
                        "המחיר הכי זול לק״ג בכל רשת. בוחרים כמה קילו — ומקבלים את הסל הירוק הזול."))
     chains_card("_p")
 
+    def _cb_var(nm):
+        ss.setdefault("prod_var", {})[nm] = list(ss.get(f"pv_{nm}") or [])
+
     @st.cache_data(show_spinner=False, ttl=3600)
     def _produce_all(chains_t, _db):
         return produce_prices(PRODUCE_ITEMS, chains=list(chains_t))
 
+    @st.cache_data(show_spinner=False, ttl=3600)
+    def _produce_cands(chains_t, _db):
+        from comparator import GLOBAL_EXC, PRODUCE_BAND, per_kg
+        return fx.produce_candidates(_db, PRODUCE_ITEMS, GLOBAL_EXC, PRODUCE_BAND, per_kg, chains=list(chains_t))
+
     with st.spinner("מחשב מחיר לקילו בכל רשת…"):
-        _pmap = _produce_all(tuple(_selected_chains), str(DB_PATH))
+        _pcands = _produce_cands(tuple(_selected_chains), str(DB_PATH))
+    ss.setdefault("prod_var", {})
+    # הזול לקילו בכל רשת — מתוך הזנים שנבחרו (אם נבחרו)
+    _pmap = {nm: fx.produce_best(_pcands.get(nm, {}), ss["prod_var"].get(nm)) for nm in _pcands}
     _pchains = [c for c in _available if c in _selected_chains and any(c in v for v in _pmap.values())]
     _names = [x["he"] for x in PRODUCE_ITEMS]
     _default_on = {"עגבניות", "מלפפונים", "בננות", "תפוחי אדמה", "בצל"}
@@ -857,7 +959,17 @@ elif tab == TABS[1]:
                         on = float(ss.get(f"prod_kg_{nm}", 0) or 0) > 0
                         with cols[j]:
                             with st.container(key=f"pcard{'on' if on else ''}_{i0 + j}"):
-                                ui.md(ui.produce_card_html(nm, have.get(bc) if bc else None, bc, cname(bc) if bc else ""))
+                                _vsel = ss["prod_var"].get(nm) or []
+                                ui.md(ui.produce_card_html(nm, have.get(bc) if bc else None, bc, cname(bc) if bc else "", _vsel))
+                                _vopts = fx.produce_varieties(_pcands.get(nm, {}))
+                                if len(_vopts) >= 1:
+                                    with st.popover("בחירת זנים" if not _vsel else f"זנים ({len(_vsel)})",
+                                                    use_container_width=True):
+                                        ui.md(f'<div class="h2" style="font-size:15px">אילו זנים של {ui.esc(nm)}?</div>'
+                                              '<div class="tiny" style="margin:2px 0 8px">בכל רשת נלקח הזול לק״ג מבין הזנים שבחרת. בלי בחירה = כל הזנים.</div>')
+                                        st.pills("זנים", _vopts, selection_mode="multi", key=f"pv_{nm}",
+                                                 default=[v for v in _vsel if v in _vopts], label_visibility="collapsed",
+                                                 on_change=_cb_var, args=(nm,))
                                 st.number_input(f"{nm} (ק\"ג)", min_value=0.0, step=0.5, key=f"prod_kg_{nm}", format="%.1f",
                                                 label_visibility="collapsed", disabled=not have)
 
@@ -880,7 +992,9 @@ elif tab == TABS[1]:
                 with st.container(key="card_pempty"):
                     ui.md(ui.empty_html("🥕", "הוסיפי ירקות לסל", "כתבי כמה קילו ליד כל ירק או פרי."))
             else:
-                _el = [(c, v) for c, v in _sorted if v["items"] > 0]
+                # קודם הרשתות שיש בהן הכי הרבה מהסל, ורק אז לפי מחיר
+                _el = sorted([(c, v) for c, v in _sorted if v["items"] > 0],
+                             key=lambda cv: (len(cv[1]["missing"]), cv[1]["total"]))
                 kg_sum = sum(float(ss[f"prod_kg_{nm}"]) for nm in _pick)
                 (bc_, bv), (wc_, wv) = _el[0], _el[-1]
                 ui.md(ui.winner_html(bc_, cname(bc_), bv["total"],
