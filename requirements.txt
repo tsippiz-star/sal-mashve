@@ -2,7 +2,12 @@ requests>=2.31
 beautifulsoup4>=4.12
 lxml>=4.9
 rapidfuzz>=3.14
-streamlit>=1.36
+# העיצוב החדש דורש Streamlit 1.40 ומעלה (כרטיסים, ניווט, חלונית מצב הנתונים)
+streamlit>=1.40
+# השלמה אוטומטית תוך כדי הקלדה בשדה "מה להוסיף?"
+streamlit-searchbox>=0.1.20
+pandas>=2.0
+openpyxl>=3.1
 # בוט טלגרם
 python-telegram-bot>=22.0
 # אופציונלי – לזיהוי חכם של פריטים עמומים
