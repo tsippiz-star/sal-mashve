@@ -249,6 +249,19 @@ div[role="dialog"] [data-testid="stMarkdownContainer"],[data-testid="stDialog"] 
 .sm-alert.ok{background:var(--green-soft);color:var(--green-ink)}
 .sm-float{display:none}
 
+/* ---------- קנייה אונליין ---------- */
+[class*="st-key-buy_online"]{margin:-2px 0 6px;gap:6px!important}
+[class*="st-key-buy_online"] [data-testid="stLinkButton"] a[kind="primary"],[class*="st-key-buy_online"] a[data-testid="stBaseLinkButton-primary"]{
+  background:var(--amber)!important;border-color:var(--amber)!important;color:#3A2600!important;border-radius:999px!important;
+  min-height:52px;font-weight:700!important;box-shadow:0 8px 20px color-mix(in oklch,var(--amber) 40%,transparent)!important}
+[class*="st-key-buy_online"] a[kind="primary"] p,[class*="st-key-buy_online"] a[data-testid="stBaseLinkButton-primary"] p{font-size:16px!important;font-weight:700!important;color:#3A2600!important}
+[class*="st-key-buy_online"] a[kind="primary"]:hover,[class*="st-key-buy_online"] a[data-testid="stBaseLinkButton-primary"]:hover{filter:brightness(.96);transform:translateY(-1px)}
+.buy-sub{font-size:13px;color:var(--ink-3);text-align:center;line-height:1.55;padding:0 8px}
+[class*="st-key-buy_online"] [data-testid="stPopover"]{display:flex;justify-content:center}
+[class*="st-key-buy_online"] [data-testid="stPopover"] button{border:0!important;background:transparent!important;min-height:32px!important;color:var(--green-ink)!important}
+[class*="st-key-buy_online"] [data-testid="stPopover"] button p{font-size:13.5px!important;text-decoration:underline}
+[data-testid="stPopoverBody"] [data-testid="stLinkButton"] a{border-radius:999px!important;justify-content:flex-start}
+
 /* ---------- כל הסוגים (קבוצת מוצרים) ---------- */
 .item-ic.group{background:oklch(0.95 0.035 250);color:oklch(0.42 0.1 250);font-size:17px}
 .item-sub.grp{color:oklch(0.42 0.1 250);white-space:normal}
