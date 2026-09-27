@@ -1106,7 +1106,13 @@ with tab_produce:
                 _tbl_rows.append(_row)
             _df_p = pd.DataFrame(_tbl_rows).set_index("ירק / פרי")
             st.markdown("#### 📋 מחיר לקילו בכל רשת")
-            st.dataframe(_df_p, use_container_width=True)
+            # תצוגה מצומצמת (נוחה בטלפון) - ואפשרות לפתוח את כל הרשתות
+            _compact_cols = ["הזול לקילו", "רשת זולה"]
+            _df_compact = _df_p[[c for c in _compact_cols if c in _df_p.columns]].reset_index()
+            _df_compact = _df_compact.rename(columns={"הזול לקילו": 'הזול (₪ לק"ג)', "רשת זולה": "רשת זולה"})
+            st.dataframe(_df_compact, use_container_width=True, hide_index=True)
+            with st.expander("📊 הצגת המחיר בכל הרשתות (טבלה מורחבת)"):
+                st.dataframe(_df_p, use_container_width=True)
             st.download_button(
                 "⬇️ הורדת טבלת המחירים לקילו (CSV)",
                 _df_p.reset_index().to_csv(index=False).encode("utf-8-sig"),
@@ -1118,7 +1124,7 @@ with tab_produce:
             st.markdown("---")
             st.markdown("#### ⚖️ הסל שלי בקילו")
             _kg_vals = {}
-            _ncol = 4
+            _ncol = 3          # במובייל Streamlit מערם עמודות אוטומטית מתחת ל-640px
             _cols = st.columns(_ncol)
             for _i, _nm in enumerate(_produce_pick):
                 with _cols[_i % _ncol]:
