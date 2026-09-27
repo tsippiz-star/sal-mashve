@@ -102,8 +102,8 @@ button[kind="primary"]:hover,button[kind="primaryFormSubmit"]:hover,[data-testid
 [data-testid="stExpander"] summary:hover{color:var(--green-ink)!important}
 [data-testid="stDataFrame"]{border-radius:16px!important;overflow:hidden;border:1px solid var(--line)}
 div[data-testid="stAlert"]{border-radius:16px!important}
-div[role="dialog"]{border-radius:24px!important;direction:rtl}
-div[role="dialog"] [data-testid="stMarkdownContainer"]{text-align:right}
+div[role="dialog"],[data-testid="stDialog"] [role="dialog"],[data-testid="stDialog"]>div>div{border-radius:24px!important;direction:rtl}
+div[role="dialog"] [data-testid="stMarkdownContainer"],[data-testid="stDialog"] [data-testid="stMarkdownContainer"]{text-align:right}
 [data-testid="stPopoverBody"]{border-radius:18px!important;direction:rtl;box-shadow:var(--shadow-lg)!important;border:1px solid var(--line)!important}
 .stCheckbox label p{font-size:14.5px!important}
 
@@ -249,6 +249,41 @@ div[role="dialog"] [data-testid="stMarkdownContainer"]{text-align:right}
 .sm-alert.ok{background:var(--green-soft);color:var(--green-ink)}
 .sm-float{display:none}
 
+/* ---------- כל הסוגים (קבוצת מוצרים) ---------- */
+.item-ic.group{background:oklch(0.95 0.035 250);color:oklch(0.42 0.1 250);font-size:17px}
+.item-sub.grp{color:oklch(0.42 0.1 250);white-space:normal}
+[class*="st-key-grp_"]{padding-inline-start:46px;margin-top:-6px}
+[class*="st-key-grp_"] .stButton>button{min-height:30px!important;padding:2px 10px!important;border:0!important;background:transparent!important;color:var(--green-ink)!important}
+[class*="st-key-grp_"] .stButton>button:hover{background:var(--green-softer)!important}
+[class*="st-key-grp_"] .stButton>button p{font-size:13px!important;font-weight:600!important}
+[data-testid="stPills"] button,[data-testid="stButtonGroup"] button[data-variant="pills"]{border-radius:999px!important}
+[data-testid="stButtonGroup"] button[data-variant="pills"][aria-checked="true"],[data-testid="stButtonGroup"] button[aria-pressed="true"],[data-testid="stButtonGroup"] button[data-selected="true"]{
+  background:var(--green-soft)!important;border-color:var(--green)!important;color:var(--green-ink)!important}
+[data-testid="stButtonGroup"],[data-testid="stButtonGroup"]>div{direction:rtl}
+[data-testid="stButtonGroup"] [role="group"],[data-testid="stButtonGroup"] [role="radiogroup"],[data-testid="stButtonGroup"] [role="listbox"]{justify-content:flex-start}
+.gp{display:flex;flex-direction:column;gap:2px;margin:6px 0 4px}
+.gp-row{display:grid;grid-template-columns:auto 86px minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px 8px;border-radius:12px;font-size:14px}
+.gp-row.first{background:var(--green-softer)}
+.gp-c{font-weight:600}
+.gp-p{color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
+.gp-v{font-weight:700}
+.gp-more{margin:6px 0 10px}
+.gp-more summary{cursor:pointer;font-size:13.5px;color:var(--green-ink);font-weight:600}
+.gp-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.gp-chip{background:#F2F5F1;border-radius:999px;padding:3px 10px;font-size:12.5px;color:var(--ink-2)}
+.bd-cell.has-pick{align-items:flex-start}
+.bd-cell.has-pick>span:first-child{display:flex;flex-direction:column;min-width:0}
+.bd-pick{font-size:11.5px;color:var(--ink-3);font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
+.bd-body:has(.has-pick){grid-template-columns:repeat(auto-fill,minmax(200px,1fr))}
+/* זנים בכרטיס ירק */
+[class*="st-key-pcard"] [data-testid="stPopover"] button{min-height:32px!important;padding:2px 10px!important;width:100%;background:#F6F8F5!important;border-color:transparent!important}
+[class*="st-key-pcard"] [data-testid="stPopover"] button p{font-size:12.5px!important;font-weight:500!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pc-var{font-size:12px;color:oklch(0.42 0.1 250);font-weight:600;margin-top:2px}
+@media (max-width:640px){
+  [class*="st-key-grp_"]{padding-inline-start:0}
+  .gp-row{grid-template-columns:auto 70px minmax(0,1fr) auto;gap:8px}
+}
+
 /* ---------- ירקות ---------- */
 .st-key-grid2_produce [data-testid="stHorizontalBlock"]{flex-wrap:wrap!important;gap:12px!important}
 .st-key-grid2_produce [data-testid="stColumn"],.st-key-grid2_produce [data-testid="column"]{flex:0 0 calc(33.333% - 8px)!important;width:calc(33.333% - 8px)!important;min-width:0!important}
@@ -376,8 +411,10 @@ def chainbar_html(chains, names, total_all):
 
 
 def item_html(q, product_name, status):
-    ic = {"ok": "✓", "unclear": "?", "none": "!"}[status]
-    if status == "ok":
+    ic = {"ok": "✓", "unclear": "?", "none": "!", "group": "≡"}[status]
+    if status == "group":
+        sub = f'<div class="item-sub grp">{esc(product_name or "")}</div>'
+    elif status == "ok":
         sub = f'<div class="item-sub">{esc(product_name or "")}</div>'
     elif status == "unclear":
         sub = '<div class="item-sub warn">יש כמה אפשרויות — איזו התכוונת?</div>'
@@ -427,10 +464,27 @@ def rank_html(rows, title="כל הרשתות", subtitle=""):
     return f'<div class="h2">{esc(title)}</div>{st_}<div class="rank">{"".join(out)}</div>'
 
 
+def group_preview_html(best_rows, sample_names, n_total):
+    """best_rows: [(cid, cname, price_for_compare, product_name, real_price)]"""
+    rows = "".join(
+        f'<div class="gp-row{" first" if i == 0 else ""}">{chain_mark(c, cn)}<span class="gp-c">{esc(cn)}</span>'
+        f'<span class="gp-p" title="{esc(pn)}">{esc(pn)}</span><span class="num gp-v">{fmt(v)} ₪</span></div>'
+        for i, (c, cn, v, pn, _rp) in enumerate(best_rows))
+    more = ""
+    if sample_names:
+        chips = "".join(f'<span class="gp-chip">{esc(n)}</span>' for n in sample_names)
+        extra = f'<span class="tiny"> ועוד {n_total - len(sample_names)}</span>' if n_total > len(sample_names) else ""
+        more = (f'<details class="gp-more"><summary>אילו מוצרים נכללים?</summary>'
+                f'<div class="gp-chips">{chips}{extra}</div></details>')
+    return f'<div class="gp">{rows}</div>{more}'
+
+
 def breakdown_html(rows, chains, names):
-    """rows: [(query, qty, is_kg, product_name, {chain: price})]"""
+    """rows: [(query, qty, is_kg, product_name, {chain: price}, picks|None)]"""
     parts = []
-    for q, qty, is_kg, pname, prices in rows:
+    for row in rows:
+        q, qty, is_kg, pname, prices = row[:5]
+        picks = row[5] if len(row) > 5 else None
         valid = {c: p for c, p in prices.items() if p is not None and c in chains}
         if not valid:
             continue
@@ -444,7 +498,11 @@ def breakdown_html(rows, chains, names):
             p = prices.get(c)
             cls = " na" if p is None else (" best" if p == mn else "")
             val = "לא נמכר" if p is None else f"{fmt(p)} ₪"
-            cells.append(f'<div class="bd-cell{cls}"><span>{esc(names.get(c, c))}</span><span class="num">{val}</span></div>')
+            pk = ""
+            if picks and c in picks:
+                pk = f'<span class="bd-pick">{esc(picks[c][0])}</span>'
+            cells.append(f'<div class="bd-cell{cls}{" has-pick" if pk else ""}"><span>{esc(names.get(c, c))}{pk}</span>'
+                         f'<span class="num">{val}</span></div>')
         parts.append(
             f'<details class="bd"><summary><span style="min-width:0"><span class="bd-name">{esc(q)}</span>{qlbl}'
             f'<div class="bd-best">הכי זול ב{esc(names.get(mc, mc))}</div></span>'
@@ -460,7 +518,7 @@ def float_html(name, total):
             f'<span class="v num">{fmt(total)} ₪</span></span><span class="go">לתוצאות ↓</span></a>')
 
 
-def produce_card_html(nm, price, chain_id, chain_name):
+def produce_card_html(nm, price, chain_id, chain_name, varieties=None):
     em = PRODUCE_EMOJI.get(nm, "🥬")
     mark = chain_mark(chain_id, chain_name) if chain_id else ""
     if price is None:
@@ -469,6 +527,8 @@ def produce_card_html(nm, price, chain_id, chain_name):
     else:
         pr = f'<div class="pc-price num">{fmt(price)} <small>₪ לק״ג</small></div>'
         wh = f'<div class="pc-where">הכי זול ב{esc(chain_name)}</div>'
+    if varieties:
+        wh += f'<div class="pc-var">זן: {esc(", ".join(varieties))}</div>'
     return (f'<div style="padding-bottom:4px"><div class="pc-top"><span class="pc-em">{em}</span>{mark}</div>'
             f'<div class="pc-name">{esc(nm)}</div>{pr}{wh}</div>')
 
