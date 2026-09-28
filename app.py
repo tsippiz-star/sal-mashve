@@ -21,9 +21,14 @@ import streamlit as st
 from comparator import CHAINS_HE, produce_prices, PRODUCE_ITEMS
 from matcher import match_item, find_candidates
 import sm_style as ui
-import facets as fx
+try:
+    import facets as fx          # "כל הסוגים" + זנים לירקות
+    HAS_FACETS = True
+except Exception:                # אם facets.py לא הועלה — האתר ממשיך לעבוד בלי התכונה הזו
+    fx = None
+    HAS_FACETS = False
 
-APP_VERSION = "db-look v7 · עיצוב חדש · 2026-09-27"
+APP_VERSION = "db-look v8 · מבצעים, משלוח, סל מפוצל, היסטוריה · 2026-09-27"
 ROOT = Path(__file__).resolve().parent
 
 # ═══════════════════════════════════════════════════════
@@ -58,6 +63,20 @@ DB_INFO = _db_stats(DB_PATH)
 # רשתות שמוכרות גם אונליין (ברירת המחדל בהשוואה)
 ONLINE_CHAINS = ["shufersal", "rami-levy", "yohananof", "tiv-taam",
                  "keshet", "freshmarket", "paz", "carrefour", "hazi-hinam"]
+# ─── אתרי הקנייה אונליין של הרשתות (נבדקו ידנית · 27/09/2026) ───
+# רשת שלא מופיעה כאן = אין לה קנייה אונליין, והכפתור יפנה לרשת הזולה הבאה שיש לה.
+STORE_URLS = {
+    "shufersal":   "https://www.shufersal.co.il/online/he/",
+    "rami-levy":   "https://www.rami-levy.co.il/he",
+    "yohananof":   "https://yochananof.co.il/",
+    "tiv-taam":    "https://www.tivtaam.co.il/",
+    "keshet":      "https://www.keshet-teamim.co.il/",
+    "freshmarket": "https://www.freshmarket.co.il/",
+    "carrefour":   "https://www.carrefour.co.il/",
+    "hazi-hinam":  "https://shop.hazi-hinam.co.il/",
+    "victory":     "https://www.victoryonline.co.il/",
+}
+
 ALL_CHAINS = ["shufersal", "rami-levy", "yohananof", "osher-ad",
               "tiv-taam", "keshet", "freshmarket", "paz", "carrefour", "hazi-hinam"]
 
@@ -99,6 +118,43 @@ import comparator as _comparator
 import matcher as _matcher
 _comparator.DB_PATH = DB_PATH
 _matcher.DB_PATH = DB_PATH
+
+# ─── v8: קובץ היסטוריית המחירים (נבנה בסריקה היומית, ענף data) ───
+HISTORY_URL = "https://raw.githubusercontent.com/tsippiz-star/sal-mashve/data/history.db"
+HISTORY_PATH = Path("/tmp/history_live.db")
+
+
+def _fetch_history_db():
+    import urllib.request as _ur
+    local = ROOT / "history.db"
+    try:
+        if HISTORY_PATH.exists() and (time.time() - HISTORY_PATH.stat().st_mtime) < REMOTE_MAX_AGE_HOURS * 3600:
+            return str(HISTORY_PATH)
+        _req = _ur.Request(HISTORY_URL, headers={"User-Agent": "sal-mashve-app"})
+        with _ur.urlopen(_req, timeout=60) as _r:
+            HISTORY_PATH.with_suffix(".part").write_bytes(_r.read())
+        HISTORY_PATH.with_suffix(".part").replace(HISTORY_PATH)
+        return str(HISTORY_PATH)
+    except Exception:
+        if HISTORY_PATH.exists():
+            return str(HISTORY_PATH)
+        return str(local) if local.exists() else None
+
+
+HISTORY_DB = _fetch_history_db()
+
+try:
+    import extras as xx          # v8: מבצעים, משלוח, סל מפוצל, היסטוריה, שיתוף
+    HAS_EXTRAS = True
+except Exception:
+    xx = None
+    HAS_EXTRAS = False
+
+try:                             # שמירת הרשימה בדפדפן (localStorage)
+    from streamlit_js_eval import streamlit_js_eval
+    HAS_JS = True
+except Exception:
+    HAS_JS = False
 
 # ═══════════════════════════════════════════════════════
 # 2) הגדרות עמוד + עיצוב
@@ -547,20 +603,171 @@ def compute(items, chains):
             continue
         pr, unit = _prices_for(it["barcode"], str(DB_PATH))
         rows.append({"it": it, "prices": {c: pr.get(c) for c in chains}, "unit": unit})
+    # ─── v8: מבצעים — עלות כל שורה עם המבצע המשתלם ביותר ───
+    use_promos = bool(HAS_EXTRAS and ss.get("opt_promos", True))
+    pmap = {}
+    if use_promos:
+        bcs = {r["it"]["barcode"] for r in rows if r["it"].get("barcode") and not r["it"].get("group")}
+        pmap = _promos_cached(tuple(sorted(bcs)), tuple(chains), str(DB_PATH))
+    for r in rows:
+        r["cost"], r["deal"], r["hint"] = {}, {}, {}
+        for c in chains:
+            p = r["prices"].get(c)
+            if p is None:
+                r["cost"][c] = None
+                continue
+            pr = pmap.get((r["it"].get("barcode"), c)) if use_promos and not r["it"].get("group") else None
+            if pr:
+                cost, deal = xx.line_cost(p, r["it"]["qty"], pr)
+                hint = xx.promo_hint(p, r["it"]["qty"], pr)
+            else:
+                cost, deal, hint = round(p * r["it"]["qty"], 2), None, None
+            r["cost"][c] = cost
+            if deal:
+                r["deal"][c] = deal
+            if hint:
+                r["hint"][c] = hint
     totals = {}
     for c in chains:
-        t, miss = 0.0, []
+        t, miss, saved = 0.0, [], 0.0
         for r in rows:
-            p = r["prices"][c]
-            if p is None:
+            cst = r["cost"][c]
+            if cst is None:
                 miss.append(_qlabel(r["it"]))
             else:
-                t += p * r["it"]["qty"]
-        totals[c] = {"total": round(t, 2), "hits": len(rows) - len(miss), "missing": miss}
+                t += cst
+                saved += r["prices"][c] * r["it"]["qty"] - cst
+        totals[c] = {"total": round(t, 2), "hits": len(rows) - len(miss), "missing": miss,
+                     "promo_saved": round(saved, 2)}
     eligible = [c for c in chains if totals[c]["hits"] > 0]
-    common = [r for r in rows if eligible and all(r["prices"][c] is not None for c in eligible)]
-    fair = {c: round(sum(r["prices"][c] * r["it"]["qty"] for r in common), 2) for c in eligible}
-    return {"rows": rows, "totals": totals, "eligible": eligible, "common": common, "fair": fair}
+    common = [r for r in rows if eligible and all(r["cost"][c] is not None for c in eligible)]
+    fair = {c: round(sum(r["cost"][c] for r in common), 2) for c in eligible}
+    # ─── v8: קנייה אונליין — דמי משלוח ומינימום הזמנה ───
+    deliver = bool(HAS_EXTRAS and ss.get("opt_delivery", False))
+    fees = {}
+    if deliver:
+        for c in eligible:
+            f, under = xx.delivery_for(c, totals[c]["total"])
+            fees[c] = {"fee": f, "under_min": under}
+    return {"rows": rows, "totals": totals, "eligible": eligible, "common": common, "fair": fair,
+            "fees": fees, "deliver": deliver}
+
+
+@st.cache_data(show_spinner=False, ttl=1800)
+def _promos_cached(bcs, chains, _db):
+    return xx.promos_for(_db, list(bcs), list(chains)) if HAS_EXTRAS else {}
+
+
+def door_total(res, c, fair=False):
+    """סה״כ לרשת — כולל משלוח אם בחרו 'קונה אונליין'."""
+    base = res["fair"][c] if fair else res["totals"][c]["total"]
+    if res.get("deliver"):
+        f = (res["fees"].get(c) or {}).get("fee")
+        if f is None:
+            return None
+        return round(base + f, 2)
+    return base
+
+
+@st.cache_data(show_spinner=False, ttl=1800)
+def _basket_index_cached(items_t, chains_t, _hdb):
+    return xx.basket_index(_hdb, list(items_t), list(chains_t), 30) if HAS_EXTRAS else None
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _private_label_catalog(chain, _db):
+    """מוצרי המותג הפרטי של רשת: [(barcode, name, price)]"""
+    if not HAS_EXTRAS:
+        return []
+    words = xx.PRIVATE_LABEL.get(chain, [])
+    if not words:
+        return []
+    conn = sqlite3.connect(_db)
+    cond = " OR ".join(["name LIKE ? OR brand LIKE ?"] * len(words))
+    args = [x for w in words for x in (f"%{w}%", f"%{w}%")]
+    rows = conn.execute(f"SELECT barcode, MAX(name), AVG(price) FROM prices WHERE chain = ? AND price > 0 AND ({cond}) "
+                        "GROUP BY barcode", [chain] + args).fetchall()
+    conn.close()
+    return [(b, n, round(p, 2)) for b, n, p in rows]
+
+
+def private_label_swaps(res, chain):
+    """לכל מוצר בסל: האם יש מותג פרטי של הרשת מאותו סוג, ובכמה הוא זול (או יקר) יותר."""
+    cat = _private_label_catalog(chain, str(DB_PATH))
+    if not cat or not HAS_FACETS:
+        return []
+    out = []
+    for r in res["rows"]:
+        it = r["it"]
+        cur = r["cost"].get(chain)
+        if cur is None or it.get("group"):
+            continue
+        core = fx._core_tokens(it["q"])[0]
+        if not core:
+            continue
+        cands = [(b, n, p) for b, n, p in cat if b != it.get("barcode") and fx._head_match(core[0], fx._n(n), 3)]
+        if not cands:
+            continue
+        # מחיר לאותה כמות (לפי גודל אריזה אם אפשר)
+        mine = fx.size_of(it.get("name") or it["q"], "", 0)
+        best = None
+        for b, n, p in cands:
+            s = fx.size_of(n, "", 0)
+            val = p * it["qty"]
+            if mine and s and s[1] == mine[1] and s[0]:
+                val = p / s[0] * mine[0] * it["qty"]
+            if best is None or val < best[2]:
+                best = (b, n, round(val, 2))
+        if best:
+            out.append({"q": it["q"], "cur": cur, "pl_name": best[1], "pl": best[2], "diff": round(cur - best[2], 2)})
+    return out
+
+
+def share_block():
+    """קישור שיתוף + העתקת הרשימה."""
+    if not HAS_EXTRAS or not ss["items"]:
+        return
+    code = xx.pack_items(ss["items"])
+    base = ""
+    try:
+        base = str(st.context.url or "").split("?")[0]
+    except Exception:
+        pass
+    link = f"{base}?list={code}" if base else f"?list={code}"
+    with st.expander("🔗 שיתוף הרשימה"):
+        ui.md('<div class="tiny" style="margin-bottom:6px">מי שיפתח את הקישור יראה בדיוק את אותה רשימה. לשלוח בוואטסאפ, במייל או להעתיק.</div>')
+        st.code(link, language=None)
+        _txt = "הרשימה שלי בסל משווה 🛒\n" + xx.items_to_text(ss["items"]) + "\n\n" + link
+        import urllib.parse as _up
+        c1, c2 = st.columns(2)
+        with c1:
+            st.link_button("שליחה בוואטסאפ", "https://wa.me/?text=" + _up.quote(_txt), use_container_width=True)
+        with c2:
+            st.download_button("הורדה כטקסט", _txt.encode("utf-8"), file_name="הרשימה_שלי.txt",
+                               use_container_width=True)
+        ui.md('<div class="tiny" style="margin-top:6px">הרשימה נשמרת גם אוטומטית בדפדפן הזה — כשתחזרי לאתר היא תחכה לך.</div>')
+
+
+def _persist_list():
+    """שמירה אוטומטית בדפדפן (localStorage) — בלי הרשמה ובלי שרת."""
+    if not HAS_EXTRAS or not HAS_JS:
+        return
+    code = xx.pack_items(ss["items"]) if ss["items"] else ""
+    if ss.get("_saved_code") == code:
+        return
+    ss["_saved_code"] = code
+    streamlit_js_eval(js_expressions=f"localStorage.setItem('sal_mashve_list', '{code}')",
+                      key=f"ls_set_{abs(hash(code)) % 10**8}")
+
+
+def _restore_items(slim):
+    out = []
+    for d in slim:
+        ss.uid += 1
+        out.append({"uid": ss.uid, "q": d["q"], "qty": float(d.get("qty") or 1), "kg": bool(d.get("kg")),
+                    "barcode": d.get("b"), "name": d.get("n") or "", "status": "ok" if (d.get("b") or d.get("g")) else "none",
+                    "cands": [], "group": d.get("g")})
+    return out
 
 
 def save_history(res):
@@ -636,12 +843,42 @@ def data_status_dialog():
 # ═══════════════════════════════════════════════════════
 # 6) כותרת עליונה + ניווט
 # ═══════════════════════════════════════════════════════
+# ─── v8: טעינת הרשימה — קודם מקישור שיתוף (?list=), אחר כך מהדפדפן ───
+if HAS_EXTRAS and not ss.get("_loaded_list"):
+    _qp = st.query_params.get("list")
+    if _qp:
+        _got = xx.unpack_items(_qp)
+        if _got:
+            ss["items"] = _restore_items(_got)
+            ss["_from_share"] = len(_got)
+        ss["_loaded_list"] = True
+        st.query_params.clear()
+    elif HAS_JS:
+        _stored = streamlit_js_eval(js_expressions="localStorage.getItem('sal_mashve_list') || ''", key="ls_get")
+        if _stored is not None:                       # None = הרכיב עוד לא ענה
+            if _stored and not ss["items"]:
+                _got = xx.unpack_items(_stored)
+                if _got:
+                    ss["items"] = _restore_items(_got)
+                    ss["_from_storage"] = len(_got)
+            ss["_loaded_list"] = True
+    else:
+        ss["_loaded_list"] = True
+
+ss.setdefault("opt_simple", False)
+if ss.get("opt_simple"):
+    ui.md('<style>html{font-size:19px}.st-key-sm_nav{display:none!important}.h-display{font-size:44px}'
+          '[class*="st-key-grp_"],[class*="st-key-foot"],.st-key-card_breakdown,.st-key-card_index{display:none!important}'
+          '.item-name{font-size:19px!important}.rank-name,.rank-price{font-size:18px!important}</style>')
+
 with st.container(key="sm_top"):
     _l, _r = st.columns([3, 2], vertical_alignment="center")
     with _l:
         ui.md(ui.logo_html())
     with _r:
         with st.container(key="sm_status"):
+            st.toggle("🔍 תצוגה פשוטה", key="opt_simple",
+                      help="טקסט גדול, מסך אחד, רק מה שחשוב — נוח למבוגרים ולמסך קטן")
             _upd_txt = (_last_upd or "")[:10]
             if DATA_OK:
                 _lbl = f"🟢 מחירים מעודכנים · {_upd_txt}" if _upd_txt else "🟢 מחירים מעודכנים"
@@ -654,12 +891,19 @@ if not info:
     ui.md(ui.alert("אין נתונים במסד. הריצי את הסקרייפר: <code>python scraper.py --chains shufersal --limit 5</code>"))
     st.stop()
 
-TABS = ["🛒 השוואת סל", "🥕 ירקות ופירות", "🔍 כל המחירים", "🧾 הסלים שלי", "💬 איך זה עובד"]
+TABS = ["🛒 השוואת סל", "🥕 ירקות ופירות", "🔍 כל המחירים", "📈 מה השתנה", "🧾 הסלים שלי", "💬 איך זה עובד"]
+if ss.get("nav") not in TABS:          # שדרוג מגרסה קודמת / תצוגה פשוטה
+    ss["nav"] = TABS[0]
 with st.container(key="sm_nav"):
     st.segmented_control("ניווט", TABS, default=TABS[0], key="nav",
                          label_visibility="collapsed", on_change=cb_nav_guard)
-tab = ss.get("nav") or TABS[0]
+tab = TABS[0] if ss.get("opt_simple") else (ss.get("nav") or TABS[0])
 ss["_last_nav"] = tab
+
+if ss.get("_from_share"):
+    ui.md(ui.alert(f"נפתחה רשימה משותפת · {ss.pop('_from_share')} מוצרים", "ok", "🔗"))
+elif ss.get("_from_storage"):
+    ui.md(ui.alert(f"הרשימה שלך מהפעם הקודמת חזרה · {ss.pop('_from_storage')} מוצרים", "ok", "👋"))
 
 if not DATA_OK:
     _cA, _cB = st.columns([5, 1.2], vertical_alignment="center")
@@ -766,7 +1010,8 @@ if tab == TABS[0]:
                             st.button("−", key=f"m_{it['uid']}", on_click=cb_qty, args=(it["uid"], -1))
                         with c4:
                             st.button("✕", key=f"x_{it['uid']}", on_click=cb_remove, args=(it["uid"],), help="הסרה")
-                        with st.container(key=f"grp_{it['uid']}"):
+                        if HAS_FACETS:
+                          with st.container(key=f"grp_{it['uid']}"):
                             if st.button("עריכת הסוגים" if it.get("group") else "כל הסוגים ← מותג, אחוז שומן, גודל",
                                          key=f"g_{it['uid']}", icon=":material/tune:",
                                          help="בחרי כמה מותגים / אחוזי שומן / גדלים — ובכל רשת יילקח הזול מביניהם"):
@@ -807,6 +1052,28 @@ if tab == TABS[0]:
                                        mime="text/csv", disabled=not n_items)
                 with f4:
                     _save_clicked = st.button("🧾 שמירה לסלים שלי", key="btn_hist", disabled=not n_items)
+                if HAS_EXTRAS:
+                    with st.popover("📷 סריקת ברקוד"):
+                        ui.md('<div class="tiny" style="margin-bottom:6px">מצלמים את הברקוד של המוצר (או כותבים את המספר) — והוא נכנס לסל.</div>')
+                        _bc_img = st.camera_input("צילום ברקוד", key="bc_cam", label_visibility="collapsed")
+                        _bc_txt = st.text_input("או מספר ברקוד", key="bc_txt", placeholder="7290000000000")
+                        _bc = None
+                        if _bc_img is not None and ss.get("_bc_img_id") != getattr(_bc_img, "file_id", None):
+                            ss["_bc_img_id"] = getattr(_bc_img, "file_id", None)
+                            _bc = xx.decode_barcode(_bc_img.getvalue())
+                            if not _bc:
+                                ui.md(ui.alert("לא הצלחתי לקרוא את הברקוד. נסי לצלם מקרוב יותר, בתאורה טובה, או כתבי את המספר."))
+                        if st.button("הוספה לפי מספר", key="bc_add", disabled=not str(_bc_txt).strip()):
+                            _bc = "".join(ch for ch in str(_bc_txt) if ch.isdigit())
+                        if _bc:
+                            _conn = sqlite3.connect(DB_PATH)
+                            _row = _conn.execute("SELECT MAX(name) FROM prices WHERE barcode = ?", (_bc,)).fetchone()
+                            _conn.close()
+                            if _row and _row[0]:
+                                cb_add_barcode(_bc, str(_row[0]))
+                                st.rerun()
+                            else:
+                                ui.md(ui.alert(f"הברקוד {ui.esc(_bc)} לא נמצא במאגר."))
 
             # קריאת קובץ שהועלה (פעם אחת לכל קובץ)
             if uploaded is not None and ss.get("_upl_id") != getattr(uploaded, "file_id", uploaded.name):
@@ -844,11 +1111,39 @@ if tab == TABS[0]:
                     ui.md(ui.alert(f"לא הצלחתי לקרוא את הקובץ: {ui.esc(str(_e))}"))
 
     # ─────────── עמודת התוצאות ───────────
-    res = compute(ss["items"], _selected_chains) if len(_selected_chains) >= 2 else None
-    if res and _save_clicked:
-        save_history(res)
-
     with col_res:
+        if HAS_EXTRAS and not ss.get("opt_simple"):
+            with st.container(key="opt_bar"):
+                o1, o2, o3 = st.columns([1, 1, 1.1], vertical_alignment="center")
+                with o1:
+                    st.toggle("🏷️ עם מבצעים", value=True, key="opt_promos",
+                              help="מחשב את המחיר אחרי מבצעי כמות (2 ב-20 וכו') שפתוחים לכל הלקוחות. בלי מועדונים וקופונים.")
+                with o2:
+                    st.toggle("🚚 קונה אונליין", value=False, key="opt_delivery",
+                              help="מוסיף לכל רשת את דמי המשלוח שלה (ומשלוח חינם מעל סכום מסוים) — הזולה עד הדלת.")
+                with o3:
+                    with st.popover("⚙️ עוד אפשרויות", use_container_width=True):
+                        st.toggle("להציע סל מפוצל ל-2 רשתות", value=True, key="opt_split")
+                        st.number_input("רק כשחוסכים לפחות (₪)", min_value=0, max_value=500, value=20, step=5,
+                                        key="opt_split_min")
+                        st.divider()
+                        st.number_input("כמה נפשות בבית? (0 = לא להציג)", min_value=0, max_value=15, value=0,
+                                        key="opt_people")
+                        st.selectbox("כל כמה זמן קונים את הסל הזה?", ["כל שבוע", "כל שבועיים", "פעם בחודש"],
+                                     key="opt_freq")
+                        st.divider()
+                        ui.md('<div class="h2" style="font-size:15px;margin-bottom:4px">🚚 דמי משלוח לפי רשת</div>'
+                              + "".join(
+                                  f'<div class="dl-row">{ui.chain_mark(c, cname(c))}<span>{ui.esc(cname(c))}</span>'
+                                  f'<b class="num">{ui.fmt(d["fee"])} ₪</b>'
+                                  f'<span class="tiny">מינ׳ {d["min"]} ₪{" · " + ui.esc(d["note"]) if d.get("note") else ""}</span></div>'
+                                  for c, d in xx.DELIVERY.items() if c in _available)
+                              + f'<div class="tiny" style="margin-top:6px">{xx.DELIVERY_UPDATED} · '
+                              + " · ".join(f'<a href="{u}" target="_blank">{ui.esc(t)}</a>' for t, u in xx.DELIVERY_SOURCES)
+                              + '</div>')
+        res = compute(ss["items"], _selected_chains) if len(_selected_chains) >= 2 else None
+        if res and _save_clicked:
+            save_history(res)
         if not res or not res["rows"] or not res["eligible"]:
             with st.container(key="card_empty"):
                 ui.md(ui.empty_html("🧺", "הסל עדיין ריק",
@@ -861,21 +1156,80 @@ if tab == TABS[0]:
                 mode = st.segmented_control("אופן ההשוואה", ["כל הסל", "השוואה הוגנת"], default="כל הסל",
                                             key="cmp_mode", label_visibility="collapsed") or "כל הסל"
                 mode = "fair" if mode == "השוואה הוגנת" else "all"
+            _dl = res.get("deliver")
+            _el_d = [c for c in el if door_total(res, c, mode == "fair") is not None]   # באונליין: רק רשתות עם משלוח
+            if _dl and not _el_d:
+                _el_d = el
             if mode == "fair":
-                vals = sorted(((c, res["fair"][c], 0) for c in el), key=lambda x: x[1])
+                vals = sorted(((c, door_total(res, c, True) or res["fair"][c], 0) for c in _el_d), key=lambda x: x[1])
                 label = f"הזולה בהשוואה הוגנת · {len(res['common'])} פריטים משותפים"
             else:
                 # קודם כל מי שכוללת את הכי הרבה מהסל, ורק אז לפי מחיר — כדי שרשת עם פריטים חסרים לא תנצח בטעות
-                vals = sorted(((c, tot[c]["total"], len(tot[c]["missing"])) for c in el), key=lambda x: (x[2], x[1]))
+                vals = sorted(((c, door_total(res, c) or tot[c]["total"], len(tot[c]["missing"])) for c in _el_d),
+                              key=lambda x: (x[2], x[1]))
                 _full = vals[0][2] == 0
                 label = (f"הכי זול לסל שלך · {len(res['rows'])} פריטים" if _full else
                          f"הכי זול מבין הרשתות שיש בהן הכי הרבה מהסל · {len(res['rows']) - vals[0][2]} מתוך {len(res['rows'])} פריטים")
+            if _dl:
+                label += " · כולל משלוח"
             best, worst = vals[0], vals[-1]
-            note = None
+            note_parts = []
             if mode == "all" and tot[best[0]]["missing"]:
-                note = (f"שימי לב: ב{ui.esc(cname(best[0]))} חסר {ui.esc(', '.join(tot[best[0]]['missing']))}, "
-                        "ולכן המחיר נראה נמוך יותר. בחרי ״השוואה הוגנת״ למעלה.")
+                note_parts.append(f"שימי לב: ב{ui.esc(cname(best[0]))} חסר {ui.esc(', '.join(tot[best[0]]['missing']))}, "
+                                  "ולכן המחיר נראה נמוך יותר. בחרי ״השוואה הוגנת״ למעלה.")
+            if _dl:
+                _fb = res["fees"].get(best[0]) or {}
+                if _fb.get("fee") is not None:
+                    _mn = (xx.DELIVERY.get(best[0]) or {}).get("min")
+                    _nt = xx.delivery_note(best[0])
+                    note_parts.append(("🚚 משלוח חינם" if _fb["fee"] == 0 else f"🚚 כולל {ui.fmt(_fb['fee'])} ₪ משלוח")
+                                      + (f" · ⚠️ מתחת למינימום ההזמנה ({_mn} ₪) — חסרים עוד "
+                                         f"{ui.fmt(_mn - tot[best[0]]['total'])} ₪" if _fb.get("under_min") and _mn else "")
+                                      + (f" · {ui.esc(_nt)}" if _nt and "הערכה" not in _nt else ""))
+            if tot[best[0]].get("promo_saved", 0) > 0.5 and mode == "all":
+                note_parts.append(f"🏷️ כולל {ui.fmt(tot[best[0]]['promo_saved'])} ₪ הנחה ממבצעים")
+            note = "<br>".join(note_parts) or None
             ui.md(ui.winner_html(best[0], cname(best[0]), best[1], label, worst[1] - best[1], cname(worst[0]), note))
+
+            # ─── v8: לאדם / לחודש ───
+            _ppl = int(ss.get("opt_people", 0) or 0)
+            _per = ss.get("opt_freq", "כל שבוע")
+            if _ppl > 0:
+                _mult = {"כל שבוע": 4.33, "כל שבועיים": 2.17, "פעם בחודש": 1.0}.get(_per, 4.33)
+                ui.md(f'<div class="per-row"><span>👤 לאדם: <b class="num">{ui.fmt(best[1] / _ppl)} ₪</b></span>'
+                      f'<span>📅 לחודש ({_per}): <b class="num">{ui.fmt(best[1] * _mult)} ₪</b></span>'
+                      f'<span>💰 חיסכון בשנה: <b class="num">{ui.fmt((worst[1] - best[1]) * _mult * 12)} ₪</b></span></div>')
+
+            # ─── v8: סל מפוצל ───
+            if HAS_EXTRAS and ss.get("opt_split", True) and mode == "all" and len(res["rows"]) >= 2:
+                _sp = xx.split_basket([{"q": _qlabel(r["it"]), "cost": r["cost"]} for r in res["rows"]],
+                                      [c for c in _selected_chains if c in el], best[1] if best[2] == 0 else None,
+                                      delivery=bool(_dl))
+                _thr = float(ss.get("opt_split_min", 20) or 20)
+                if _sp and _sp.get("saving") is not None and _sp["saving"] >= _thr:
+                    ui.md(ui.split_html(_sp, cname))
+
+            # ─── כפתור: לקנות אונליין ברשת הזולה ───
+            _online = [(c, t) for c, t, _m in vals if c in STORE_URLS]
+            if _online:
+                _bc, _bt = _online[0]
+                _is_winner = _bc == best[0]
+                with st.container(key="buy_online"):
+                    st.link_button(f"🛒  לקנייה אונליין ב{cname(_bc)}", STORE_URLS[_bc], type="primary",
+                                   use_container_width=True)
+                    if _is_winner:
+                        _sub = "נפתח בחלון חדש, באתר הרשת. את המוצרים מוסיפים לעגלה שם."
+                    else:
+                        _sub = (f"ל{ui.esc(cname(best[0]))} אין קנייה אונליין — {ui.esc(cname(_bc))} היא הזולה הבאה שמוכרת אונליין "
+                                f"(<b class='num'>{ui.fmt(_bt)} ₪</b>, +{ui.fmt(_bt - best[1])} ₪).")
+                    ui.md(f'<div class="buy-sub">{_sub}</div>')
+                    _others = [(c, t) for c, t in _online[1:4]]
+                    if _others:
+                        with st.popover("או לקנות ברשת אחרת"):
+                            ui.md('<div class="tiny" style="margin-bottom:8px">הרשתות הבאות בדירוג שמוכרות אונליין:</div>')
+                            for c, t in _others:
+                                st.link_button(f"{cname(c)} · {ui.fmt(t)} ₪ (+{ui.fmt(t - _bt)})", STORE_URLS[c],
+                                               use_container_width=True)
 
             with st.container(key="card_rank"):
                 sub = (f"רק {len(res['common'])} הפריטים שנמכרים בכל הרשתות — כך אף רשת לא מקבלת יתרון על פריט חסר."
@@ -894,8 +1248,29 @@ if tab == TABS[0]:
                 ui.md(ui.breakdown_html(
                     [(r["it"]["q"], r["it"]["qty"], r["it"]["kg"],
                       (_group_desc(r["it"]) if r["it"].get("group") else r["it"]["name"]),
-                      r["prices"], r.get("picks")) for r in res["rows"]],
+                      {c: (r["cost"][c] / r["it"]["qty"] if r["cost"].get(c) is not None and r["it"]["qty"] else None)
+                       for c in _selected_chains},
+                      r.get("picks"), r.get("deal"), r.get("hint")) for r in res["rows"]],
                     _selected_chains, CHAINS_HE))
+
+            # ─── v8: מותג פרטי ───
+            if HAS_EXTRAS and not ss.get("opt_simple"):
+                _pl = private_label_swaps(res, best[0])
+                if _pl:
+                    with st.expander(f"🏷️ מה אם אעבור למותג הפרטי של {cname(best[0])}?"):
+                        ui.md(ui.private_label_html(_pl))
+
+            # ─── v8: המדד האישי ───
+            if HAS_EXTRAS and HISTORY_DB and not ss.get("opt_simple"):
+                _bi = _basket_index_cached(tuple((r["it"]["barcode"], r["it"]["qty"]) for r in res["rows"]
+                                                 if r["it"].get("barcode") and not r["it"].get("group")),
+                                           tuple(el), HISTORY_DB)
+                if _bi:
+                    with st.container(key="card_index"):
+                        ui.md(ui.index_html(_bi, cname))
+
+            # ─── v8: שיתוף ───
+            share_block()
 
             if any_missing:
                 with st.expander("⚖️ הוגנות ההשוואה — מי לא כללה איזה פריט"):
@@ -932,11 +1307,15 @@ elif tab == TABS[1]:
         from comparator import GLOBAL_EXC, PRODUCE_BAND, per_kg
         return fx.produce_candidates(_db, PRODUCE_ITEMS, GLOBAL_EXC, PRODUCE_BAND, per_kg, chains=list(chains_t))
 
-    with st.spinner("מחשב מחיר לקילו בכל רשת…"):
-        _pcands = _produce_cands(tuple(_selected_chains), str(DB_PATH))
     ss.setdefault("prod_var", {})
-    # הזול לקילו בכל רשת — מתוך הזנים שנבחרו (אם נבחרו)
-    _pmap = {nm: fx.produce_best(_pcands.get(nm, {}), ss["prod_var"].get(nm)) for nm in _pcands}
+    with st.spinner("מחשב מחיר לקילו בכל רשת…"):
+        if HAS_FACETS:
+            _pcands = _produce_cands(tuple(_selected_chains), str(DB_PATH))
+            # הזול לקילו בכל רשת — מתוך הזנים שנבחרו (אם נבחרו)
+            _pmap = {nm: fx.produce_best(_pcands.get(nm, {}), ss["prod_var"].get(nm)) for nm in _pcands}
+        else:
+            _pcands = {}
+            _pmap = _produce_all(tuple(_selected_chains), str(DB_PATH))
     _pchains = [c for c in _available if c in _selected_chains and any(c in v for v in _pmap.values())]
     _names = [x["he"] for x in PRODUCE_ITEMS]
     _default_on = {"עגבניות", "מלפפונים", "בננות", "תפוחי אדמה", "בצל"}
@@ -961,7 +1340,7 @@ elif tab == TABS[1]:
                             with st.container(key=f"pcard{'on' if on else ''}_{i0 + j}"):
                                 _vsel = ss["prod_var"].get(nm) or []
                                 ui.md(ui.produce_card_html(nm, have.get(bc) if bc else None, bc, cname(bc) if bc else "", _vsel))
-                                _vopts = fx.produce_varieties(_pcands.get(nm, {}))
+                                _vopts = fx.produce_varieties(_pcands.get(nm, {})) if HAS_FACETS else []
                                 if len(_vopts) >= 1:
                                     with st.popover("בחירת זנים" if not _vsel else f"זנים ({len(_vsel)})",
                                                     use_container_width=True):
@@ -1002,6 +1381,14 @@ elif tab == TABS[1]:
                                      wv["total"] - bv["total"], cname(wc_),
                                      (f"ב{ui.esc(cname(bc_))} אין מחיר לפי משקל עבור: {ui.esc(', '.join(bv['missing']))}"
                                       if bv["missing"] else None)))
+                _pon = [c for c, _v in _el if c in STORE_URLS]
+                if _pon:
+                    with st.container(key="buy_online_p"):
+                        st.link_button(f"🛒  לקנייה אונליין ב{cname(_pon[0])}", STORE_URLS[_pon[0]], type="primary",
+                                       use_container_width=True)
+                        ui.md('<div class="buy-sub">נפתח בחלון חדש, באתר הרשת.'
+                              + ("" if _pon[0] == bc_ else f" ל{ui.esc(cname(bc_))} אין קנייה אונליין, לכן מוצגת הזולה הבאה.")
+                              + '</div>')
                 with st.container(key="card_prank"):
                     ui.md(ui.rank_html([(c, cname(c), v["total"], len(v["missing"])) for c, v in _el]))
                 _rows_tot = [{"רשת": cname(c), 'סה"כ לסל (₪)': v["total"], "פריטים שנמצאו": v["items"],
@@ -1112,9 +1499,46 @@ elif tab == TABS[2]:
                           'זו ספירה לפי מוצר בודד — לא בהכרח הסל הכולל הזול.</div>')
 
 # ═══════════════════════════════════════════════════════
-# 10) לשונית: הסלים שלי
+# 9ב) לשונית: מה השתנה — שרינקפלציה, עליות וירידות מחיר
 # ═══════════════════════════════════════════════════════
 elif tab == TABS[3]:
+    ui.md(ui.page_head("מה השתנה במחירים",
+                       "מוצרים שהאריזה שלהם קטנה והמחיר נשאר (שרינקפלציה), ומה התייקר או הוזל בתקופה האחרונה."))
+    chains_card("_c")
+    if not HAS_EXTRAS or not HAS_FACETS:
+        ui.md(ui.alert("הלשונית הזו דורשת את הקבצים extras.py ו-facets.py בריפו."))
+    else:
+        _days = st.segmented_control("תקופה", [7, 30, 90], default=30, key="chg_days",
+                                     format_func=lambda d: f"{d} ימים אחרונים", label_visibility="collapsed") or 30
+
+        @st.cache_data(show_spinner=False, ttl=1800)
+        def _changes_cached(days, chains_t, _hdb):
+            return xx.changes(_hdb, fx.size_of, days, list(chains_t))
+
+        _ch = _changes_cached(int(_days), tuple(_selected_chains), HISTORY_DB) if HISTORY_DB else None
+        if not _ch or _ch["days"] < 2:
+            _n = (_ch or {}).get("days", 0)
+            with st.container(key="card_chg_empty"):
+                ui.md(ui.empty_html("📈", "אוספים נתונים",
+                                    f"הסריקה היומית שומרת תמונת מצב כל בוקר. נשמרו עד עכשיו {_n} ימים — "
+                                    "מהיום השני יופיעו כאן שינויים, ואחרי שבוע התמונה תהיה מלאה."))
+        else:
+            ui.md(ui.changes_summary_html(len(_ch["shrink"]), len(_ch["up"]), len(_ch["down"]), _ch["since"]))
+            _t1, _t2, _t3 = st.tabs([f"🔍 שרינקפלציה ({len(_ch['shrink'])})",
+                                     f"📈 התייקרו ({len(_ch['up'])})", f"📉 הוזלו ({len(_ch['down'])})"])
+            with _t1:
+                ui.md('<div class="tiny" style="margin:4px 0 10px">האריזה קטנה, והמחיר נשאר או עלה — בפועל התייקרות סמויה. '
+                      'האחוז הוא השינוי במחיר ליחידת מידה.</div>')
+                ui.md(ui.changes_list_html(_ch["shrink"][:60], cname, "shrink") or ui.empty_html("✅", "לא נמצאה שרינקפלציה", "בתקופה הזו."))
+            with _t2:
+                ui.md(ui.changes_list_html(_ch["up"][:60], cname, "up") or ui.empty_html("✅", "אין עליות", "בתקופה הזו."))
+            with _t3:
+                ui.md(ui.changes_list_html(_ch["down"][:60], cname, "down") or ui.empty_html("—", "אין ירידות", "בתקופה הזו."))
+
+# ═══════════════════════════════════════════════════════
+# 10) לשונית: הסלים שלי
+# ═══════════════════════════════════════════════════════
+elif tab == TABS[4]:
     ui.md(ui.page_head("הסלים שלי", "ההשוואות ששמרת נשמרות רק אצלך, בחלון הדפדפן הזה."))
     hist = ss["history"]
     if not hist:
@@ -1146,3 +1570,7 @@ ui.md('<div class="footer">סל משווה · מחירים מקבצי שקיפו
 # טעינה מוקדמת של קטלוג ההשלמה (אחרי שהעמוד כבר הוצג) — כך ההקלדה הראשונה מהירה
 if HAS_SEARCHBOX:
     _catalog(str(DB_PATH))
+
+# v8: שמירת הרשימה בדפדפן — בסוף כל ריצה, כדי שתכלול את כל השינויים
+if ss.get("_loaded_list"):
+    _persist_list()
