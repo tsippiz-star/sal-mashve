@@ -1,36 +1,67 @@
-name: Daily Price Scrape
+name: עדכון מחירי רשתות אונליין
 
-# רץ אוטומטית כל בוקר ב-06:00 שעון ישראל (03:00 UTC)
-# ואפשר להפעיל ידנית מכפתור Actions ב-GitHub
+# רץ כל יום ב-06:00 שעון ישראל (03:00 UTC) וגם בלחיצה ידנית מלשונית Actions
+# v8: מוריד גם מבצעים, ושומר היסטוריית מחירים בקובץ history.db (נשמר בין הריצות)
 on:
   schedule:
-    - cron: '0 3 * * *'
-  workflow_dispatch:      # אפשר להפעיל ידנית
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+
     steps:
-      - name: Checkout code
+      - name: הורדת הקוד
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: התקנת Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.11"
 
-      - name: Install dependencies
+      - name: התקנת תלויות
         run: |
-          pip install -r requirements.txt
+          pip install requests lxml beautifulsoup4 rapidfuzz playwright
+          # דפדפן אמיתי — לחצי חינם, שחוסמת גישה אוטומטית (אם עדיין נחסם, הרשת פשוט מדולגת)
+          python -m playwright install --with-deps chromium
 
-      - name: Run scraper (Shufersal only – GitHub runners are US-based)
+      - name: הורדת ההיסטוריה הקיימת מענף data (אם יש)
         run: |
-          python src/scraper.py --chains shufersal --limit 5
+          curl -sfL -o history.db "https://raw.githubusercontent.com/${{ github.repository }}/data/history.db" \
+            && ls -lh history.db || echo "אין עדיין היסטוריה — תיווצר עכשיו"
 
-      - name: Commit updated DB
+      - name: מילוי היסטוריה לאחור מגרסאות ישנות של המסד (רק בפעם הראשונה)
+        if: hashFiles('history.db') == ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python tools/backfill_history.py --repo "${{ github.repository }}" --out history.db || true
+
+      - name: סריקה - רשתות שמוכרות אונליין + מבצעים + תמונת מצב יומית
+        run: python scraper.py --limit 2
+
+      - name: איתור ובדיקת המסד שנבנה
         run: |
-          git config --global user.name  'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add prices.db
-          git diff --cached --quiet || git commit -m "🤖 עדכון מחירים אוטומטי"
-          git push
+          set -e
+          DBFILE=$(find . -maxdepth 3 -name 'prices*.db' -printf '%s %p\n' | sort -rn | head -1 | cut -d' ' -f2-)
+          if [ -z "$DBFILE" ]; then echo "לא נמצא קובץ מסד"; find . -maxdepth 3 -name '*.db' -ls; exit 1; fi
+          echo "DBFILE=$DBFILE" >> "$GITHUB_ENV"
+          python -c "import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);c.execute('VACUUM');print('רשתות:',[r[0] for r in c.execute('SELECT DISTINCT chain FROM prices')]);print('שורות:',c.execute('SELECT COUNT(*) FROM prices').fetchone()[0])" "$DBFILE"
+          python -c "import sqlite3;c=sqlite3.connect('history.db');c.execute('VACUUM');print('ימי היסטוריה:',c.execute('SELECT COUNT(DISTINCT day) FROM price_history').fetchone()[0])"
+          ls -lh "$DBFILE" history.db
+
+      - name: דחיפה לענף data כקומיט בודד (בלי לנפח את ההיסטוריה)
+        run: |
+          set -e
+          git config user.name "sal-mashve-bot"
+          git config user.email "actions@github.com"
+          [ "$DBFILE" != "./prices.db" ] && cp "$DBFILE" prices.db || true
+          git checkout --orphan data_push
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          git add -f prices.db history.db
+          git commit -m "עדכון מחירים אוטומטי $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push -f origin data_push:data
