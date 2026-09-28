@@ -249,6 +249,59 @@ div[role="dialog"] [data-testid="stMarkdownContainer"],[data-testid="stDialog"] 
 .sm-alert.ok{background:var(--green-soft);color:var(--green-ink)}
 .sm-float{display:none}
 
+/* ---------- v8: אפשרויות, מבצעים, סל מפוצל, מדד, שינויים ---------- */
+.st-key-opt_bar{background:#fff;border:1px solid var(--line);border-radius:18px;padding:8px 14px;margin-bottom:10px}
+.st-key-opt_bar [data-testid="stHorizontalBlock"]{flex-wrap:nowrap!important;gap:8px!important}
+.st-key-opt_bar [data-testid="stColumn"]{min-width:0!important}
+.st-key-opt_bar [data-testid="stWidgetLabel"] p{font-size:13.5px!important;color:var(--ink)!important}
+.st-key-opt_bar [data-testid="stPopover"] button{min-height:36px!important;padding:2px 10px!important}
+.st-key-opt_bar [data-testid="stPopover"] button p{font-size:13px!important}
+.st-key-sm_status{flex-direction:row!important;align-items:center;justify-content:flex-end;gap:10px!important}
+.st-key-sm_status [data-testid="stCheckbox"],.st-key-sm_status .stToggle{margin:0}
+.st-key-sm_status [data-testid="stWidgetLabel"] p{font-size:13px!important;white-space:nowrap}
+.badge.deal{background:oklch(0.94 0.05 350);color:oklch(0.45 0.13 350)}
+.bd-deal,.bd-hint{display:block;font-size:11.5px;font-weight:600;white-space:normal;margin-top:2px}
+.bd-deal{color:oklch(0.45 0.13 350)}
+.bd-hint{color:var(--amber-ink);font-weight:500}
+.bd-cell:has(.bd-deal),.bd-cell:has(.bd-hint){align-items:flex-start}
+.bd-cell:has(.bd-deal)>span:first-child,.bd-cell:has(.bd-hint)>span:first-child{display:flex;flex-direction:column;min-width:0}
+.bd-body:has(.bd-deal),.bd-body:has(.bd-hint){grid-template-columns:repeat(auto-fill,minmax(200px,1fr))}
+.dl-row{display:grid;grid-template-columns:auto 80px 62px minmax(0,1fr);gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line);font-size:13.5px}
+.dl-row .tiny{font-size:11.5px}
+.per-row{display:flex;flex-wrap:wrap;gap:8px 16px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:10px 14px;font-size:14px;color:var(--ink-2);margin:6px 0}
+.per-row b{color:var(--ink)}
+.split{background:oklch(0.97 0.025 250);border:1px solid oklch(0.88 0.05 250);border-radius:18px;padding:16px;margin:8px 0}
+.sp-top{display:flex;gap:12px;align-items:center}
+.sp-ic{font-size:24px}
+.sp-t{font-weight:700;font-size:16px;color:oklch(0.38 0.1 250)}
+.sp-rows{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.sp-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;background:#fff;border-radius:12px;padding:8px 10px;font-size:13.5px}
+.sp-row .num{font-weight:700}
+.pl-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line);font-size:14px}
+.pl-verdict{margin-top:10px;background:var(--green-softer);border-radius:12px;padding:10px 12px;font-size:14px}
+.st-key-card_index .ix-row{display:grid;grid-template-columns:auto 90px 80px minmax(0,1fr);gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line);font-size:14px}
+.ix-up{color:var(--red-ink);font-weight:700}.ix-dn{color:var(--green-ink);font-weight:700}.ix-eq{color:var(--ink-3)}
+.chg-sum{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:8px 0}
+.chg-box{border-radius:16px;padding:14px;background:#fff;border:1px solid var(--line)}
+.chg-box .v{font-family:var(--font-d);font-size:28px;font-weight:700;line-height:1}
+.chg-box .l{font-size:13px;color:var(--ink-3);margin-top:4px}
+.chg-box.shrink .v{color:oklch(0.5 0.14 30)}.chg-box.up .v{color:var(--amber-ink)}.chg-box.down .v{color:var(--green-ink)}
+.chg-list{background:#fff;border:1px solid var(--line);border-radius:18px;padding:4px 16px}
+.chg-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:12px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}
+.chg-row:last-child{border-bottom:0}
+.chg-name{font-weight:600;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chg-what{display:flex;flex-direction:column;align-items:flex-end;font-size:14px;gap:2px}
+.chg-size{font-size:13.5px}
+@media (max-width:640px){
+  .st-key-opt_bar [data-testid="stHorizontalBlock"]{flex-wrap:wrap!important}
+  .st-key-opt_bar [data-testid="stColumn"]{flex:1 1 45%!important}
+  .chg-row{grid-template-columns:auto minmax(0,1fr) auto}
+  .chg-row .chg-what{grid-column:2 / -1;align-items:flex-start;flex-direction:row;gap:10px}
+  .st-key-card_index .ix-row{grid-template-columns:auto minmax(0,1fr) auto}
+  .st-key-card_index .ix-row .tiny{grid-column:2 / -1}
+  .st-key-sm_status [data-testid="stWidgetLabel"] p{font-size:11.5px!important}
+}
+
 /* ---------- קנייה אונליין ---------- */
 [class*="st-key-buy_online"]{margin:-2px 0 6px;gap:6px!important}
 [class*="st-key-buy_online"] [data-testid="stLinkButton"] a[kind="primary"],[class*="st-key-buy_online"] a[data-testid="stBaseLinkButton-primary"]{
@@ -378,9 +431,14 @@ div[role="dialog"] [data-testid="stMarkdownContainer"],[data-testid="stDialog"] 
   .st-key-sm_nav{position:fixed!important;bottom:0;left:0;right:0;z-index:999990;margin:0!important;
     background:rgba(255,255,255,.96);backdrop-filter:blur(14px);border-top:1px solid var(--line);border-bottom:0;
     padding:6px 6px calc(12px + env(safe-area-inset-bottom))!important}
-  .st-key-sm_nav [data-testid="stButtonGroup"]>div,.st-key-sm_nav [role="radiogroup"]{display:grid!important;grid-template-columns:repeat(5,1fr);gap:2px!important}
+  .st-key-sm_nav [data-testid="stButtonGroup"]>div,.st-key-sm_nav [role="radiogroup"]{display:grid!important;grid-template-columns:repeat(6,1fr);gap:0!important}
   .st-key-sm_nav button{padding:6px 2px!important;min-height:50px;width:100%}
-  .st-key-sm_nav button p{font-size:11.5px!important;line-height:1.25}
+  .st-key-sm_nav button p{font-size:10.5px!important;line-height:1.2}
+  .st-key-sm_nav button{padding:4px 0!important}
+  .st-key-sm_status{gap:4px!important}
+  .st-key-sm_status [data-testid="stWidgetLabel"] p{font-size:0!important}
+  .st-key-sm_status [data-testid="stWidgetLabel"] p::before{content:"🔍 פשוט";font-size:11.5px}
+  .st-key-sm_status [data-testid="stTooltipIcon"]{display:none}
   /* פס סיכום צף */
   .sm-float{display:flex;position:fixed;bottom:82px;left:12px;right:12px;z-index:999980;background:var(--ink);color:#fff!important;
     border-radius:18px;padding:12px 14px;align-items:center;justify-content:space-between;gap:10px;box-shadow:var(--shadow-lg);text-decoration:none!important}
@@ -498,6 +556,8 @@ def breakdown_html(rows, chains, names):
     for row in rows:
         q, qty, is_kg, pname, prices = row[:5]
         picks = row[5] if len(row) > 5 else None
+        deals = (row[6] if len(row) > 6 else None) or {}
+        hints = (row[7] if len(row) > 7 else None) or {}
         valid = {c: p for c, p in prices.items() if p is not None and c in chains}
         if not valid:
             continue
@@ -514,16 +574,100 @@ def breakdown_html(rows, chains, names):
             pk = ""
             if picks and c in picks:
                 pk = f'<span class="bd-pick">{esc(picks[c][0])}</span>'
+            if c in deals:
+                pk += f'<span class="bd-deal">🏷️ {esc(deals[c])}</span>'
+            elif c in hints:
+                pk += f'<span class="bd-hint">💡 {esc(hints[c])}</span>'
             cells.append(f'<div class="bd-cell{cls}{" has-pick" if pk else ""}"><span>{esc(names.get(c, c))}{pk}</span>'
                          f'<span class="num">{val}</span></div>')
+        _tag = ' <span class="badge deal">מבצע</span>' if mc in deals else ""
         parts.append(
-            f'<details class="bd"><summary><span style="min-width:0"><span class="bd-name">{esc(q)}</span>{qlbl}'
+            f'<details class="bd"><summary><span style="min-width:0"><span class="bd-name">{esc(q)}</span>{qlbl}{_tag}'
             f'<div class="bd-best">הכי זול ב{esc(names.get(mc, mc))}</div></span>'
             f'<span class="num" style="font-weight:700">{fmt(mn * qty)} ₪</span><span class="bd-chev">▼</span></summary>'
             f'<div class="bd-body"><div class="bd-prod">{esc(pname or "")}</div>{"".join(cells)}</div></details>'
         )
     return ('<div class="sec-head"><div class="h2">מחיר לכל מוצר</div><span class="tiny">לחצי על מוצר לפירוט</span></div>'
             + "".join(parts))
+
+
+def split_html(sp, cname):
+    """כרטיס 'סל מפוצל' — רק כשהחיסכון עובר את הסף."""
+    a, b = sp["a"], sp["b"]
+    fees = f'<div class="tiny">כולל {fmt(sp["fees"])} ₪ משלוחים</div>' if sp.get("fees") else ""
+    b_list = " · ".join(esc(x) for x in sp["b_items"][:8]) + (" …" if len(sp["b_items"]) > 8 else "")
+    return (f'<div class="split"><div class="sp-top"><span class="sp-ic">✂️</span><div>'
+            f'<div class="sp-t">סל מפוצל חוסך עוד <b class="num">{fmt(sp["saving"])} ₪</b></div>'
+            f'<div class="tiny">שתי עצירות במקום אחת · סה״כ <b class="num">{fmt(sp["total"])} ₪</b></div>{fees}</div></div>'
+            f'<div class="sp-rows">'
+            f'<div class="sp-row">{chain_mark(a, cname(a))}<span><b>{esc(cname(a))}</b> — {len(sp["a_items"])} מוצרים</span>'
+            f'<span class="num">{fmt(sp["a_sum"])} ₪</span></div>'
+            f'<div class="sp-row">{chain_mark(b, cname(b))}<span><b>{esc(cname(b))}</b> — {b_list}</span>'
+            f'<span class="num">{fmt(sp["b_sum"])} ₪</span></div></div></div>')
+
+
+def private_label_html(rows):
+    tot = sum(r["diff"] for r in rows)
+    lines = "".join(
+        f'<div class="pl-row"><div style="min-width:0"><b>{esc(r["q"])}</b>'
+        f'<div class="tiny" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">← {esc(r["pl_name"])}</div></div>'
+        f'<span class="num">{fmt(r["cur"])} → {fmt(r["pl"])}</span>'
+        f'<span class="badge {"ok" if r["diff"] > 0 else "warn"} num">{"חוסכת " + fmt(r["diff"]) if r["diff"] > 0 else "יקר ב-" + fmt(-r["diff"])} ₪</span></div>'
+        for r in sorted(rows, key=lambda r: -r["diff"]))
+    verdict = (f'המעבר למותג הפרטי חוסך <b class="num">{fmt(tot)} ₪</b> על המוצרים האלה.' if tot > 0.5 else
+               'בסל הזה המותג הפרטי <b>לא זול יותר</b> — אין סיבה להחליף.')
+    return (f'<div class="tiny" style="margin-bottom:8px">השוואה כנה — כולל כשהמותג הפרטי יקר יותר. מחיר מנורמל לאותו גודל כשאפשר.</div>'
+            f'{lines}<div class="pl-verdict">{verdict}</div>')
+
+
+def index_html(bi, cname):
+    rows = sorted(bi["chains"].items(), key=lambda kv: kv[1]["pct"])
+    items = "".join(
+        f'<div class="ix-row">{chain_mark(c, cname(c))}<span>{esc(cname(c))}</span>'
+        f'<span class="num ix-{"up" if v["pct"] > 0.001 else "dn" if v["pct"] < -0.001 else "eq"}">'
+        f'{"▲" if v["pct"] > 0.001 else "▼" if v["pct"] < -0.001 else "●"} {abs(v["pct"]) * 100:.1f}%</span>'
+        f'<span class="tiny num">{fmt(v["then"])} → {fmt(v["now"])} ₪</span></div>' for c, v in rows)
+    d0 = "/".join(bi["from"].split("-")[::-1][:2])
+    return (f'<div class="sec-head"><div class="h2">📊 הסל שלך התייקר?</div>'
+            f'<span class="tiny">מאז {d0}</span></div>'
+            f'<div class="tiny" style="margin-bottom:6px">אותו סל בדיוק, היום מול אז — רק מוצרים שהיה להם מחיר בשני התאריכים.</div>{items}')
+
+
+def changes_summary_html(n_shrink, n_up, n_down, since):
+    d0 = "/".join((since or "").split("-")[::-1][:2])
+    return (f'<div class="chg-sum">'
+            f'<div class="chg-box shrink"><div class="v num">{n_shrink}</div><div class="l">שרינקפלציה</div></div>'
+            f'<div class="chg-box up"><div class="v num">{n_up}</div><div class="l">התייקרו</div></div>'
+            f'<div class="chg-box down"><div class="v num">{n_down}</div><div class="l">הוזלו</div></div>'
+            f'</div><div class="tiny" style="margin:6px 0 4px">שינויים מאז {d0}, ברשתות שנבחרו.</div>')
+
+
+def _size_lbl(amt, dim):
+    if not amt:
+        return ""
+    if dim == "v":
+        return f"{amt / 1000:g} ל׳" if amt >= 1000 else f"{amt:g} מ״ל"
+    return f"{amt / 1000:g} ק״ג" if amt >= 1000 else f"{amt:g} ג׳"
+
+
+def changes_list_html(rows, cname, kind):
+    if not rows:
+        return ""
+    out = []
+    for r in rows:
+        if kind == "shrink":
+            what = (f'<span class="chg-size">{_size_lbl(r["old_amt"], r["dim"])} ← <b>{_size_lbl(r["new_amt"], r["dim"])}</b></span>'
+                    f'<span class="tiny num">{fmt(r["old"])} → {fmt(r["new"])} ₪</span>')
+            pct = f'<span class="badge warn num">+{r["unit_change"] * 100:.0f}% ליחידה</span>'
+        else:
+            what = f'<span class="num">{fmt(r["old"])} → <b>{fmt(r["new"])} ₪</b></span>'
+            pct = (f'<span class="badge {"warn" if kind == "up" else "ok"} num">'
+                   f'{"+" if r["pct"] > 0 else ""}{r["pct"] * 100:.0f}%</span>')
+        out.append(f'<div class="chg-row">{chain_mark(r["chain"], cname(r["chain"]))}'
+                   f'<div style="min-width:0"><div class="chg-name">{esc(r["name"])}</div>'
+                   f'<div class="tiny">{esc(cname(r["chain"]))} · {"/".join(r["day"].split("-")[::-1][:2])}</div></div>'
+                   f'<div class="chg-what">{what}</div>{pct}</div>')
+    return f'<div class="chg-list">{"".join(out)}</div>'
 
 
 def float_html(name, total):
