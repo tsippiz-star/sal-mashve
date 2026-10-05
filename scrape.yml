@@ -39,7 +39,9 @@ jobs:
         if: hashFiles('history.db') == ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python tools/backfill_history.py --repo "${{ github.repository }}" --out history.db || true
+        run: |
+          F=tools/backfill_history.py; [ -f "$F" ] || F=backfill_history.py
+          python "$F" --repo "${{ github.repository }}" --out history.db || true
 
       - name: סריקה - רשתות שמוכרות אונליין + מבצעים + תמונת מצב יומית
         run: python scraper.py --limit 2
