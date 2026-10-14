@@ -6,6 +6,11 @@ rapidfuzz>=3.14
 streamlit>=1.40
 # השלמה אוטומטית תוך כדי הקלדה בשדה "מה להוסיף?"
 streamlit-searchbox>=0.1.20
+# v8: שמירת הרשימה בדפדפן (בלי הרשמה)
+streamlit-js-eval>=0.1.7
+# v8: קריאת ברקוד מתמונה
+zxing-cpp>=2.2
+pillow>=10.0
 pandas>=2.0
 openpyxl>=3.1
 # בוט טלגרם
