@@ -266,6 +266,41 @@ div[role="dialog"] [data-testid="stMarkdownContainer"],[data-testid="stDialog"] 
 .bd-cell:has(.bd-deal),.bd-cell:has(.bd-hint){align-items:flex-start}
 .bd-cell:has(.bd-deal)>span:first-child,.bd-cell:has(.bd-hint)>span:first-child{display:flex;flex-direction:column;min-width:0}
 .bd-body:has(.bd-deal),.bd-body:has(.bd-hint){grid-template-columns:repeat(auto-fill,minmax(200px,1fr))}
+.st-key-buy_online button[kind="primary"],.st-key-buy_online [data-testid="stBaseButton-primary"]{
+  background:var(--amber)!important;border-color:var(--amber)!important;color:#3A2600!important;min-height:52px;
+  box-shadow:0 8px 20px color-mix(in oklch,var(--amber) 40%,transparent)!important}
+.st-key-buy_online button[kind="primary"] p,.st-key-buy_online [data-testid="stBaseButton-primary"] p{font-size:16px!important;font-weight:700!important;color:#3A2600!important}
+.st-key-buy_online button[kind="primary"]:hover{filter:brightness(.96)}
+.qa-banner{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;background:repeating-linear-gradient(-45deg,#FFF4D6,#FFF4D6 12px,#FFEBB8 12px,#FFEBB8 24px);
+  border:1.5px dashed #D9A43A;border-radius:14px;padding:9px 14px;margin-bottom:10px;font-size:14px;color:#6B4A00}
+.qa-banner .qa-ver{margin-inline-start:auto;font-size:11.5px;opacity:.75}
+.st-key-qa_fab{position:fixed;left:18px;bottom:18px;z-index:999995;width:auto!important}
+.st-key-qa_fab button{background:#17231E!important;color:#fff!important;border:0!important;box-shadow:0 10px 24px rgba(0,0,0,.25)!important;min-height:46px}
+.st-key-qa_fab button p{color:#fff!important;font-weight:700!important}
+@media (max-width:640px){.st-key-qa_fab{bottom:150px;left:10px}.st-key-qa_fab button p{font-size:0!important}.st-key-qa_fab button p::before{content:"🐞";font-size:20px}}
+.footer-links{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin-top:8px}
+.footer-links a{color:var(--ink-2)!important;text-decoration:underline;font-size:13px}
+.cart-head{display:flex;gap:12px;align-items:center}
+.cart-bar{height:8px;border-radius:999px;background:#EEF1ED;overflow:hidden;margin:12px 0 10px}
+.cart-bar i{display:block;height:100%;background:var(--green);border-radius:999px;transition:width .3s}
+[class*="st-key-cartrow_"]{border-bottom:1px solid var(--line);padding:4px 0}
+[class*="st-key-cartrow_"] [data-testid="stHorizontalBlock"]{flex-wrap:nowrap!important;gap:8px!important;align-items:center}
+[class*="st-key-cartrow_"] [data-testid="stColumn"]{min-width:0!important}
+[class*="st-key-cartrow_"] [data-testid="stColumn"]:first-child{flex:0 0 32px!important}
+[class*="st-key-cartrow_"] [data-testid="stColumn"]:last-child{flex:0 0 auto!important;width:auto!important}
+[class*="st-key-cartrow_"] [data-testid="stLinkButton"] a{min-height:36px!important;padding:2px 12px!important;border-radius:999px!important}
+[class*="st-key-cartrow_"] [data-testid="stLinkButton"] a p{font-size:13px!important}
+[class*="st-key-cartrow_"] [data-testid="stMarkdownContainer"]>div{display:flex;align-items:center;gap:10px}
+.cart-item{flex:1;min-width:0}
+.cart-item.done .ci-name{text-decoration:line-through;color:var(--ink-3)}
+.ci-name{font-weight:600;font-size:15px}
+.ci-sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ci-cost{font-weight:700;white-space:nowrap}
+@media (max-width:640px){
+  .cart-item .ci-sub{white-space:normal}
+  [class*="st-key-cartrow_"] [data-testid="stLinkButton"] a p{font-size:0!important}
+  [class*="st-key-cartrow_"] [data-testid="stLinkButton"] a p::before{content:"↗";font-size:16px}
+}
 .dl-row{display:grid;grid-template-columns:auto 80px 62px minmax(0,1fr);gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line);font-size:13.5px}
 .dl-row .tiny{font-size:11.5px}
 .per-row{display:flex;flex-wrap:wrap;gap:8px 16px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:10px 14px;font-size:14px;color:var(--ink-2);margin:6px 0}
@@ -668,6 +703,33 @@ def changes_list_html(rows, cname, kind):
                    f'<div class="tiny">{esc(cname(r["chain"]))} · {"/".join(r["day"].split("-")[::-1][:2])}</div></div>'
                    f'<div class="chg-what">{what}</div>{pct}</div>')
     return f'<div class="chg-list">{"".join(out)}</div>'
+
+
+def cart_head_html(cid, cname_, n, n_done, total, verified):
+    pct = (n_done / n * 100) if n else 0
+    warn = "" if verified else (
+        '<div class="tiny" style="margin-top:6px;color:var(--amber-ink)">⚠️ את קישורי החיפוש של הרשת הזו לא הצלחנו לבדוק מראש. '
+        'אם נפתח עמוד לא נכון — חפשי את שם המוצר באתר.</div>')
+    return (f'<div class="cart-head">{chain_mark(cid, cname_, lg=True)}<div style="flex:1;min-width:0">'
+            f'<div class="h2">מעבירים את הסל ל{esc(cname_)}</div>'
+            f'<div class="tiny">לכל מוצר: ״פתיחה ברשת״ ← ״הוספה לסל״ באתר ← מסמנים ✓ כאן</div></div>'
+            f'<div style="text-align:left"><div class="num" style="font-weight:700;font-size:18px">{fmt(total)} ₪</div>'
+            f'<div class="tiny">{n_done} מתוך {n} בעגלה</div></div></div>'
+            f'<div class="cart-bar"><i style="width:{pct:.0f}%"></i></div>{warn}')
+
+
+def cart_item_html(q, name, qty, kg, cost, deal, barcode, done):
+    qlbl = (f"{format(qty, 'g')} ק״ג · " if kg else (f"{format(qty, 'g')} יח׳ · " if qty != 1 else ""))
+    d = f'<span class="badge deal">🏷️ {esc(deal)}</span>' if deal else ""
+    bc = f' · <span class="num">{esc(barcode)}</span>' if barcode else ""
+    return (f'<div class="cart-item{" done" if done else ""}"><div class="ci-name">{esc(q)} {d}</div>'
+            f'<div class="tiny ci-sub">{qlbl}{esc(name)}{bc}</div></div>'
+            f'<div class="num ci-cost">{fmt(cost)} ₪</div>')
+
+
+def qa_banner_html(version):
+    return (f'<div class="qa-banner"><b>🧪 גרסת בדיקה</b><span>זה לא האתר האמיתי — מותר לשבור! '
+            f'מצאת בעיה? כפתור 🐞 בפינה.</span><span class="num qa-ver">{esc(version)}</span></div>')
 
 
 def float_html(name, total):
