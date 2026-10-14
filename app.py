@@ -167,9 +167,40 @@ st.set_page_config(
     menu_items={"About": "השוואת מחירים חכמה בין רשתות המזון בישראל.\nנתונים מקבצי שקיפות מחירים רשמיים."},
 )
 ui.inject_css()
-st.markdown('<link rel="manifest" href="/static/manifest.json"><meta name="theme-color" content="#1F7A5A">'
-            '<meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="סל משווה">',
-            unsafe_allow_html=True)
+# ─── PWA: manifest, אייקונים ו-Service Worker ───
+# Streamlit מציג תוכן בתוך העמוד שלו, ולכן מזריקים את התגיות ל-<head> של העמוד הראשי
+# דרך רכיב HTML קטן. הקבצים עצמם נמצאים בתיקייה static/ (נגישים ב-/app/static/...).
+import streamlit.components.v1 as _components
+_components.html("""
+<script>
+(function () {
+  var d = window.parent.document, h = d.head;
+  if (h.querySelector('link[rel="manifest"][data-sm]')) return;
+  var base = window.parent.location.origin + window.parent.location.pathname.replace(/\\/$/, '');
+  function add(tag, attrs) { var e = d.createElement(tag); for (var k in attrs) e.setAttribute(k, attrs[k]); e.setAttribute('data-sm', '1'); h.appendChild(e); }
+  add('link', {rel: 'manifest', href: base + '/app/static/manifest.json'});
+  add('link', {rel: 'apple-touch-icon', href: base + '/app/static/apple-touch-icon.png'});
+  add('link', {rel: 'icon', type: 'image/png', href: base + '/app/static/favicon.png'});
+  add('meta', {name: 'theme-color', content: '#1F7A5A'});
+  add('meta', {name: 'apple-mobile-web-app-capable', content: 'yes'});
+  add('meta', {name: 'mobile-web-app-capable', content: 'yes'});
+  add('meta', {name: 'apple-mobile-web-app-title', content: 'סל משווה'});
+  add('meta', {name: 'apple-mobile-web-app-status-bar-style', content: 'default'});
+  add('meta', {name: 'description', content: 'משווים סל קניות בין רשתות המזון בישראל ומגלים איפה הכי זול — בהשוואה הוגנת, עם מבצעים ומשלוח.'});
+  // Service Worker: ב-Streamlit Cloud הוא מוגבל לתיקייה /app/static (אין שליטה על כותרות השרת),
+  // ולכן כאן הוא רק מכין את עמוד "אין חיבור". אחרי המעבר לדומיין משלך (Dockerfile) הוא יוגש מהשורש
+  // ויכסה את כל האתר — זה מה ש-Google Play בודקת.
+  // הרישום רץ בעמוד הראשי עצמו (לא בתוך המסגרת של הרכיב)
+  var s = d.createElement('script');
+  s.textContent = "if('serviceWorker' in navigator){var b='" + base + "';" +
+    "fetch(b+'/sw.js',{method:'HEAD'}).then(function(r){" +
+    "var ok=r.ok&&/javascript/.test(r.headers.get('content-type')||'');" +
+    "return ok?navigator.serviceWorker.register(b+'/sw.js',{scope:b+'/'}):navigator.serviceWorker.register(b+'/app/static/sw.js');" +
+    "}).catch(function(){});}";
+  h.appendChild(s);
+})();
+</script>
+""", height=0)
 
 
 def cname(c):
@@ -770,6 +801,66 @@ def _restore_items(slim):
     return out
 
 
+@st.dialog("עוזר העגלה", width="large")
+def cart_helper_dialog(chain, rows):
+    """מעבר מהיר מהסל לאתר הרשת: כפתור לכל מוצר שפותח אותו ישר בחיפוש של הרשת, + סימון מה כבר נוסף לעגלה."""
+    done = ss.setdefault("_cart_done", {}).setdefault(chain, set())
+    items = []
+    for r in rows:
+        it = r["it"]
+        if r["cost"].get(chain) is None:
+            continue
+        # שם המוצר כפי שהוא ברשת הזו (לקבוצה — המוצר הזול שנבחר ברשת)
+        name = (r.get("picks") or {}).get(chain, (None,))[0] or it.get("name") or it["q"]
+        items.append({"key": f"{it['uid']}", "q": it["q"], "name": name, "qty": it["qty"], "kg": it["kg"],
+                      "barcode": it.get("barcode"), "cost": r["cost"][chain], "deal": (r.get("deal") or {}).get(chain)})
+    missing = [r["it"]["q"] for r in rows if r["cost"].get(chain) is None]
+    n_done = sum(1 for i in items if i["key"] in done)
+    total = sum(i["cost"] for i in items)
+
+    ui.md(ui.cart_head_html(chain, cname(chain), len(items), n_done, total,
+                            chain in xx.SEARCH_VERIFIED))
+    for i in items:
+        with st.container(key=f"cartrow_{i['key']}"):
+            a, b, c = st.columns([0.6, 6, 2.4], vertical_alignment="center")
+            with a:
+                st.checkbox("נוסף", value=i["key"] in done, key=f"cart_ck_{chain}_{i['key']}",
+                            label_visibility="collapsed", on_change=_cb_cart_toggle, args=(chain, i["key"]))
+            with b:
+                ui.md(ui.cart_item_html(i["q"], i["name"], i["qty"], i["kg"], i["cost"], i["deal"], i["barcode"],
+                                        i["key"] in done))
+            with c:
+                st.link_button("פתיחה ברשת ↗", xx.search_url(chain, i["name"]), use_container_width=True)
+    if missing:
+        ui.md(ui.alert(f"לא נמכרים ב{ui.esc(cname(chain))}: {ui.esc(', '.join(missing))}. "
+                       "אפשר לקנות אותם ברשת אחרת, או לבחור ״כל הסוגים״ כדי למצוא תחליף.", "warn", "ℹ️"))
+    st.write("")
+    f1, f2, f3 = st.columns([1.4, 1, 1])
+    with f1:
+        st.link_button("✓ לקופה באתר הרשת" if n_done == len(items) and items else f"פתיחת אתר {cname(chain)}",
+                       STORE_URLS.get(chain, "#"), type="primary", use_container_width=True)
+    with f2:
+        _txt = f"הסל שלי ל{cname(chain)} 🛒\n" + "\n".join(
+            (f"{format(i['qty'], 'g')} ק״ג " if i["kg"] else (f"{format(i['qty'], 'g')} × " if i["qty"] != 1 else ""))
+            + i["name"] + (f"  [{i['barcode']}]" if i["barcode"] else "") for i in items)
+        st.download_button("📋 רשימה להדבקה", _txt.encode("utf-8"), file_name=f"סל_{chain}.txt", use_container_width=True,
+                           help="כולל ברקודים — בחלק מהאתרים אפשר לחפש לפי ברקוד")
+    with f3:
+        if st.button("איפוס הסימונים", use_container_width=True, key="cart_reset"):
+            ss["_cart_done"][chain] = set()
+            st.rerun()
+    ui.md('<div class="tiny" style="margin-top:8px;line-height:1.6">💡 פעם ראשונה? התחברי לחשבון באתר הרשת לפני שמתחילים — '
+          'כך כל המוצרים ייכנסו לאותה עגלה. הסימונים נשמרים גם אם סוגרים את החלון.</div>')
+
+
+def _cb_cart_toggle(chain, key):
+    done = ss.setdefault("_cart_done", {}).setdefault(chain, set())
+    if ss.get(f"cart_ck_{chain}_{key}"):
+        done.add(key)
+    else:
+        done.discard(key)
+
+
 def save_history(res):
     el = res["eligible"]
     if not el:
@@ -865,11 +956,100 @@ if HAS_EXTRAS and not ss.get("_loaded_list"):
     else:
         ss["_loaded_list"] = True
 
+# ─── מצב QA: פעיל רק בעותק הבדיקות (כתובת עם "qa", או QA_MODE = true ב-Secrets) ───
+def _secret(name, default=""):
+    try:
+        return st.secrets.get(name, default)
+    except Exception:
+        return default
+
+
+try:
+    _host = str(st.context.url or "").lower()
+except Exception:
+    _host = ""
+QA_MODE = str(_secret("QA_MODE", "")).lower() in ("1", "true", "yes") or "-qa." in _host or "qa-" in _host.split("//")[-1][:12]
+
+
+def _qa_context():
+    """מה נשלח עם כל דיווח — בלי שום מידע אישי."""
+    return {
+        "גרסה": APP_VERSION,
+        "לשונית": ss.get("_last_nav", ""),
+        "רשתות": ", ".join(ss.get("_chains", [])),
+        "מבצעים": ss.get("opt_promos", True), "אונליין": ss.get("opt_delivery", False),
+        "תצוגה פשוטה": ss.get("opt_simple", False),
+        "סל": " | ".join(f"{x['q']} ×{format(x['qty'], 'g')}" for x in ss.get("items", [])),
+        "קישור לסל": (xx.pack_items(ss["items"]) if HAS_EXTRAS and ss.get("items") else ""),
+        "זמן": datetime.now(_IL).strftime("%d/%m/%Y %H:%M"),
+    }
+
+
+def _qa_send_github(title, body):
+    """פותח Issue בגיטהאב (אם הוגדר QA_GITHUB_TOKEN). מחזיר קישור או None."""
+    token, repo = _secret("QA_GITHUB_TOKEN"), _secret("QA_GITHUB_REPO", "tsippiz-star/sal-mashve")
+    if not token:
+        return None
+    import json as _json
+    import urllib.request as _ur
+    req = _ur.Request(f"https://api.github.com/repos/{repo}/issues", method="POST",
+                      data=_json.dumps({"title": title, "body": body, "labels": ["QA"]}).encode("utf-8"),
+                      headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                               "User-Agent": "sal-mashve-qa"})
+    try:
+        with _ur.urlopen(req, timeout=15) as r:
+            return _json.load(r).get("html_url")
+    except Exception:
+        return None
+
+
+@st.dialog("🐞 דיווח על בעיה", width="large")
+def qa_report_dialog():
+    ui.md('<div class="tiny" style="margin-bottom:8px">תודה שאת/ה בודק/ת! מצב האתר (הלשונית, הסל וההגדרות) יצורף אוטומטית — '
+          'אין צורך להעתיק אותו.</div>')
+    kind = st.segmented_control("סוג", ["🐞 באג", "🎨 תצוגה", "🔢 מחיר / חישוב שגוי", "💡 הצעה"],
+                                default="🐞 באג", key="qa_kind")
+    sev = st.segmented_control("חומרה", ["חוסם", "משמעותי", "קטן"], default="משמעותי", key="qa_sev")
+    what = st.text_area("מה קרה?", key="qa_what", placeholder="למשל: לחצתי על ״להעביר את הסל״ וכלום לא נפתח")
+    expect = st.text_input("מה ציפית שיקרה?", key="qa_expect")
+    steps = st.text_area("צעדים לשחזור (לא חובה)", key="qa_steps", height=80,
+                         placeholder="1. הוספתי 2 חלב\n2. הדלקתי ״קונה אונליין״\n3. …")
+    device = st.selectbox("מכשיר", ["מחשב", "טלפון אנדרואיד", "אייפון", "טאבלט"], key="qa_device")
+    who = st.text_input("שם הבודק/ת (לא חובה)", key="qa_who")
+    shot = st.file_uploader("צילום מסך (לא חובה)", type=["png", "jpg", "jpeg"], key="qa_shot")
+    ctx = _qa_context()
+    title = f"[QA · {sev}] {kind} — {(what or '').strip()[:60]}"
+    body = (f"**סוג:** {kind}  \n**חומרה:** {sev}  \n**מכשיר:** {device}  \n**בודק/ת:** {who or '—'}\n\n"
+            f"### מה קרה\n{what}\n\n### מה היה צפוי\n{expect or '—'}\n\n### צעדים\n{steps or '—'}\n\n"
+            "### מצב האתר\n" + "\n".join(f"- **{k}:** {v}" for k, v in ctx.items() if k != "קישור לסל")
+            + (f"\n- **פתיחת אותו סל:** `?list={ctx['קישור לסל']}`" if ctx.get("קישור לסל") else "")
+            + ("\n\n_(צורף צילום מסך — לבקש מהבודק/ת לשלוח אותו בנפרד)_" if shot else ""))
+    st.write("")
+    if st.button("שליחה", type="primary", use_container_width=True, disabled=not (what or "").strip(), key="qa_send"):
+        url = _qa_send_github(title, body)
+        if url:
+            ui.md(ui.alert(f'הדיווח נשלח ✓ <a href="{url}" target="_blank">צפייה בדיווח</a>', "ok", "✅"))
+        else:
+            import urllib.parse as _up
+            to = _secret("QA_EMAIL", "")
+            mail = f"mailto:{to}?subject={_up.quote(title)}&body={_up.quote(body[:1800])}"
+            ui.md(ui.alert("לחצי על הכפתור כדי לשלוח במייל — הכל כבר ממולא.", "ok", "✉️"))
+            st.link_button("✉️ פתיחת המייל", mail, use_container_width=True)
+            with st.expander("או להעתיק את הדיווח"):
+                st.code(title + "\n\n" + body, language=None)
+
+
 ss.setdefault("opt_simple", False)
 if ss.get("opt_simple"):
     ui.md('<style>html{font-size:19px}.st-key-sm_nav{display:none!important}.h-display{font-size:44px}'
           '[class*="st-key-grp_"],[class*="st-key-foot"],.st-key-card_breakdown,.st-key-card_index{display:none!important}'
           '.item-name{font-size:19px!important}.rank-name,.rank-price{font-size:18px!important}</style>')
+
+if QA_MODE:
+    ui.md(ui.qa_banner_html(APP_VERSION))
+    with st.container(key="qa_fab"):
+        if st.button("🐞 דיווח על בעיה", key="qa_open"):
+            qa_report_dialog()
 
 with st.container(key="sm_top"):
     _l, _r = st.columns([3, 2], vertical_alignment="center")
@@ -1215,10 +1395,18 @@ if tab == TABS[0]:
                 _bc, _bt = _online[0]
                 _is_winner = _bc == best[0]
                 with st.container(key="buy_online"):
-                    st.link_button(f"🛒  לקנייה אונליין ב{cname(_bc)}", STORE_URLS[_bc], type="primary",
-                                   use_container_width=True)
+                    if HAS_EXTRAS and _bc in xx.SEARCH_URLS:
+                        if st.button(f"🛒  להעביר את הסל ל{cname(_bc)}", type="primary", use_container_width=True,
+                                     key="btn_cart_helper"):
+                            ss["_cart_chain"] = _bc
+                            cart_helper_dialog(_bc, [r for r in res["rows"]])
+                    else:
+                        st.link_button(f"🛒  לקנייה אונליין ב{cname(_bc)}", STORE_URLS[_bc], type="primary",
+                                       use_container_width=True)
                     if _is_winner:
-                        _sub = "נפתח בחלון חדש, באתר הרשת. את המוצרים מוסיפים לעגלה שם."
+                        _sub = ("עוזר העגלה פותח כל מוצר ישר באתר הרשת — לוחצים ״הוספה לסל״ ומסמנים ✓."
+                                if HAS_EXTRAS and _bc in xx.SEARCH_URLS else
+                                "נפתח בחלון חדש, באתר הרשת. את המוצרים מוסיפים לעגלה שם.")
                     else:
                         _sub = (f"ל{ui.esc(cname(best[0]))} אין קנייה אונליין — {ui.esc(cname(_bc))} היא הזולה הבאה שמוכרת אונליין "
                                 f"(<b class='num'>{ui.fmt(_bt)} ₪</b>, +{ui.fmt(_bt - best[1])} ₪).")
@@ -1565,7 +1753,10 @@ else:
     ui.md(ui.page_head("איך זה עובד", "שלושה צעדים, בלי הרשמה."))
     ui.md(ui.help_html())
 
-ui.md('<div class="footer">סל משווה · מחירים מקבצי שקיפות המחירים הרשמיים של הרשתות · חינם ובלי הרשמה · בנוי בישראל</div>')
+ui.md('<div class="footer">סל משווה · מחירים מקבצי שקיפות המחירים הרשמיים של הרשתות · חינם ובלי הרשמה · בנוי בישראל'
+      '<div class="footer-links"><a href="app/static/privacy.html" target="_blank">מדיניות פרטיות</a>'
+      '<a href="app/static/terms.html" target="_blank">תנאי שימוש</a>'
+      '<a href="app/static/support.html" target="_blank">תמיכה ויצירת קשר</a></div></div>')
 
 # טעינה מוקדמת של קטלוג ההשלמה (אחרי שהעמוד כבר הוצג) — כך ההקלדה הראשונה מהירה
 if HAS_SEARCHBOX:
