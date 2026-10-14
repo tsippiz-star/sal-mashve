@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#1F7A5A">
+<title>סל משווה · אין חיבור</title>
+<style>
+  html,body{margin:0;height:100%;background:#FBFAF6;color:#17231E;font-family:"Heebo","Rubik","Arial Hebrew",Arial,sans-serif}
+  .w{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:32px;gap:14px}
+  img{width:88px;height:88px;border-radius:22px}
+  h1{font-size:24px;margin:6px 0 0}
+  p{color:#4B5B54;max-width:320px;line-height:1.6;margin:0}
+  button{margin-top:10px;font:inherit;font-weight:700;font-size:16px;border:0;border-radius:999px;background:#1F7A5A;color:#fff;padding:12px 26px;min-height:48px;cursor:pointer}
+  .list{margin-top:18px;background:#fff;border:1px solid #E9EDE8;border-radius:18px;padding:14px 18px;max-width:340px;width:100%;text-align:right;display:none}
+  .list h2{font-size:15px;margin:0 0 6px}
+  .list li{padding:3px 0;color:#4B5B54}
+</style>
+</head>
+<body>
+<div class="w">
+  <img src="icon-192.png" alt="">
+  <h1>אין כרגע חיבור לאינטרנט</h1>
+  <p>סל משווה צריך אינטרנט כדי לבדוק את המחירים העדכניים ברשתות. ברגע שהחיבור יחזור — ממשיכים מאיפה שעצרת.</p>
+  <button onclick="location.reload()">לנסות שוב</button>
+  <div class="list" id="list"><h2>הרשימה האחרונה שלך</h2><ul id="items"></ul></div>
+</div>
+<script>
+  // מציג את הרשימה השמורה בדפדפן (אם יש) — כדי שאפשר לקנות גם בלי אינטרנט
+  try {
+    var code = localStorage.getItem('sal_mashve_list');
+    if (code) {
+      var b = code.replace(/-/g, '+').replace(/_/g, '/'); while (b.length % 4) b += '=';
+      var bin = Uint8Array.from(atob(b), function (c) { return c.charCodeAt(0); });
+      if (window.DecompressionStream) {
+        new Response(new Blob([bin]).stream().pipeThrough(new DecompressionStream('deflate'))).text().then(function (t) {
+          var items = JSON.parse(t);
+          var ul = document.getElementById('items');
+          items.forEach(function (i) { var li = document.createElement('li'); li.textContent = (i.qty && i.qty != 1 ? i.qty + ' × ' : '') + i.q; ul.appendChild(li); });
+          if (items.length) document.getElementById('list').style.display = 'block';
+        });
+      }
+    }
+  } catch (e) {}
+  window.addEventListener('online', function () { location.reload(); });
+</script>
+</body>
+</html>

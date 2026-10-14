@@ -1,0 +1,26 @@
+{
+  "id": "/",
+  "name": "סל משווה – הסל הכי זול בישראל",
+  "short_name": "סל משווה",
+  "description": "משווים סל קניות בין 10 רשתות המזון בישראל ומגלים איפה הכי זול — בהשוואה הוגנת, עם מבצעים ומשלוח.",
+  "lang": "he",
+  "dir": "rtl",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait",
+  "background_color": "#FBFAF6",
+  "theme_color": "#1F7A5A",
+  "categories": ["shopping", "food", "finance", "lifestyle"],
+  "icons": [
+    { "src": "app/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "app/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "app/static/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "app/static/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "השוואת סל", "url": "/?source=pwa", "icons": [{ "src": "app/static/icon-192.png", "sizes": "192x192" }] },
+    { "name": "מה השתנה במחירים", "url": "/?source=pwa&tab=changes", "icons": [{ "src": "app/static/icon-192.png", "sizes": "192x192" }] }
+  ]
+}
